@@ -60,39 +60,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/games/:id/ai/discuss", async (req, res) => {
-    const game = await storage.getGame(Number(req.params.id));
-    if (!game) return res.status(404).json({ message: "Game not found" });
+    try {
+      const game = await storage.getGame(Number(req.params.id));
+      if (!game) return res.status(404).json({ message: "Game not found" });
 
-    const { model, team } = req.body;
-    const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
+      const { model, team } = req.body;
+      const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
 
-    if (!currentTeamPlayers.includes(model)) {
-      return res.status(400).json({ message: "AI model is not part of the team" });
+      if (!currentTeamPlayers.includes(model)) {
+        return res.status(400).json({ message: "AI model is not part of the team" });
+      }
+
+      const discussion = await discussAndVote(
+        model,
+        team,
+        game.words,
+        req.body.clue,
+        game.teamDiscussion as TeamDiscussionEntry[],
+        game.gameHistory as GameHistoryEntry[],
+        game.revealedCards
+      );
+
+      const newDiscussionEntry: TeamDiscussionEntry = {
+        team,
+        player: model,
+        message: discussion.message,
+        confidence: discussion.confidence,
+        timestamp: Date.now()
+      };
+
+      await storage.updateGame(game.id, {
+        teamDiscussion: [...(game.teamDiscussion as TeamDiscussionEntry[]), newDiscussionEntry]
+      });
+
+      res.json(newDiscussionEntry);
+    } catch (error) {
+      console.error("Error in AI discussion:", error);
+      res.status(500).json({ 
+        message: "Failed to process AI discussion",
+        error: error.message 
+      });
     }
-
-    const discussion = await discussAndVote(
-      model,
-      team,
-      game.words,
-      req.body.clue,
-      game.teamDiscussion as TeamDiscussionEntry[],
-      game.gameHistory as GameHistoryEntry[],
-      game.revealedCards
-    );
-
-    const newDiscussionEntry: TeamDiscussionEntry = {
-      team,
-      player: model,
-      message: discussion.message,
-      confidence: discussion.confidence,
-      timestamp: Date.now()
-    };
-
-    const updatedGame = await storage.updateGame(game.id, {
-      teamDiscussion: [...(game.teamDiscussion as TeamDiscussionEntry[]), newDiscussionEntry]
-    });
-
-    res.json(newDiscussionEntry);
   });
 
   app.post("/api/games/:id/ai/vote", async (req, res) => {

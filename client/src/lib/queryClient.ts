@@ -2,8 +2,20 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    let errorMessage;
+    try {
+      // Try to parse error as JSON first
+      const data = await res.json();
+      errorMessage = data.message || res.statusText;
+    } catch {
+      // If JSON parsing fails, use text content
+      try {
+        errorMessage = await res.text();
+      } catch {
+        errorMessage = res.statusText;
+      }
+    }
+    throw new Error(`${res.status}: ${errorMessage}`);
   }
 }
 
@@ -14,7 +26,12 @@ export async function apiRequest(
 ): Promise<Response> {
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers: data ? { 
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    } : {
+      "Accept": "application/json"
+    },
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
@@ -31,6 +48,9 @@ export const getQueryFn: <T>(options: {
   async ({ queryKey }) => {
     const res = await fetch(queryKey[0] as string, {
       credentials: "include",
+      headers: {
+        "Accept": "application/json"
+      }
     });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
@@ -38,7 +58,12 @@ export const getQueryFn: <T>(options: {
     }
 
     await throwIfResNotOk(res);
-    return await res.json();
+
+    try {
+      return await res.json();
+    } catch (error) {
+      throw new Error(`Failed to parse JSON response: ${error.message}`);
+    }
   };
 
 export const queryClient = new QueryClient({
