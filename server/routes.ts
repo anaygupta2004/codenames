@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { getSpymasterClue, getGuesserMove, discussAndVote, makeConsensusVote } from "./lib/ai-service";
 import { insertGameSchema } from "@shared/schema";
-import type { Game, GameState, TeamDiscussionEntry, ConsensusVote } from "@shared/schema";
+import type { Game, GameState, TeamDiscussionEntry, ConsensusVote, GameHistoryEntry } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/games", async (req, res) => {
@@ -59,37 +59,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(updatedGame);
   });
 
-  app.post("/api/games/:id/ai/clue", async (req, res) => {
-    const game = await storage.getGame(Number(req.params.id));
-    if (!game) return res.status(404).json({ message: "Game not found" });
-
-    const clue = await getSpymasterClue(
-      game.currentTurn === "red_turn" ? "gpt-4o" : "claude-3-5-sonnet-20241022",
-      game.words,
-      game.currentTurn === "red_turn" ? game.redTeam : game.blueTeam,
-      game.currentTurn === "red_turn" ? game.blueTeam : game.redTeam,
-      game.assassin,
-      game.gameHistory
-    );
-
-    res.json(clue);
-  });
-
-  app.post("/api/games/:id/ai/guess", async (req, res) => {
-    const game = await storage.getGame(Number(req.params.id));
-    if (!game) return res.status(404).json({ message: "Game not found" });
-
-    const guess = await getGuesserMove(
-      game.currentTurn === "red_turn" ? "gpt-4o" : "claude-3-5-sonnet-20241022",
-      game.words,
-      req.body.clue,
-      game.revealedCards,
-      game.gameHistory
-    );
-
-    res.json({ guess });
-  });
-
   app.post("/api/games/:id/ai/discuss", async (req, res) => {
     const game = await storage.getGame(Number(req.params.id));
     if (!game) return res.status(404).json({ message: "Game not found" });
@@ -106,8 +75,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       team,
       game.words,
       req.body.clue,
-      game.teamDiscussion,
-      game.gameHistory,
+      game.teamDiscussion as TeamDiscussionEntry[],
+      game.gameHistory as GameHistoryEntry[],
       game.revealedCards
     );
 
@@ -119,8 +88,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       timestamp: Date.now()
     };
 
-    await storage.updateGame(game.id, {
-      teamDiscussion: [...game.teamDiscussion, newDiscussionEntry]
+    const updatedGame = await storage.updateGame(game.id, {
+      teamDiscussion: [...(game.teamDiscussion as TeamDiscussionEntry[]), newDiscussionEntry]
     });
 
     res.json(newDiscussionEntry);
@@ -141,7 +110,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       model,
       team,
       word,
-      game.teamDiscussion
+      game.teamDiscussion as TeamDiscussionEntry[]
     );
 
     const newVote: ConsensusVote = {
@@ -153,11 +122,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     };
 
     const updatedGame = await storage.updateGame(game.id, {
-      consensusVotes: [...game.consensusVotes, newVote]
+      consensusVotes: [...(game.consensusVotes as ConsensusVote[]), newVote]
     });
 
     // Check if all AI team members have voted and approved
-    const teamVotes = updatedGame.consensusVotes.filter(v =>
+    const teamVotes = (updatedGame.consensusVotes as ConsensusVote[]).filter(v =>
       v.team === team && v.word === word
     );
     const teamAIPlayers = currentTeamPlayers.filter(p => p !== "human");
