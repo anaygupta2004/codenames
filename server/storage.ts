@@ -24,11 +24,13 @@ export class MemStorage implements IStorage {
       redScore: 0,
       blueScore: 0,
       revealedCards: [],
-      gameHistory: [],
-      teamDiscussion: [],
-      consensusVotes: [],
+      gameHistory: [] as GameHistoryEntry[],
+      teamDiscussion: [] as TeamDiscussionEntry[],
+      consensusVotes: [] as ConsensusVote[],
       startTime: now,
       currentTurnStartTime: now,
+      gameDuration: insertGame.gameDuration || 1800,
+      turnTimeLimit: insertGame.turnTimeLimit || 180
     };
     this.games.set(id, game);
     return game;
@@ -41,14 +43,14 @@ export class MemStorage implements IStorage {
     return {
       ...game,
       teamDiscussion: game.teamDiscussion.map(entry => 
-        typeof entry === 'string' ? JSON.parse(entry) : entry
-      ) as TeamDiscussionEntry[],
+        typeof entry === 'string' ? JSON.parse(entry) as TeamDiscussionEntry : entry
+      ),
       gameHistory: game.gameHistory.map(entry =>
-        typeof entry === 'string' ? JSON.parse(entry) : entry
-      ) as GameHistoryEntry[],
+        typeof entry === 'string' ? JSON.parse(entry) as GameHistoryEntry : entry
+      ),
       consensusVotes: game.consensusVotes.map(entry =>
-        typeof entry === 'string' ? JSON.parse(entry) : entry
-      ) as ConsensusVote[],
+        typeof entry === 'string' ? JSON.parse(entry) as ConsensusVote : entry
+      ),
     };
   }
 
@@ -56,21 +58,14 @@ export class MemStorage implements IStorage {
     const game = await this.getGame(id);
     if (!game) throw new Error("Game not found");
 
-    // Handle serialization of complex types
-    const processedUpdates = {
+    const updatedGame = {
+      ...game,
       ...updates,
-      teamDiscussion: updates.teamDiscussion?.map(entry =>
-        typeof entry === 'string' ? entry : JSON.stringify(entry)
-      ),
-      gameHistory: updates.gameHistory?.map(entry =>
-        typeof entry === 'string' ? entry : JSON.stringify(entry)
-      ),
-      consensusVotes: updates.consensusVotes?.map(entry =>
-        typeof entry === 'string' ? entry : JSON.stringify(entry)
-      ),
+      teamDiscussion: updates.teamDiscussion || game.teamDiscussion,
+      gameHistory: updates.gameHistory || game.gameHistory,
+      consensusVotes: updates.consensusVotes || game.consensusVotes,
     };
 
-    const updatedGame = { ...game, ...processedUpdates };
     this.games.set(id, updatedGame);
     return updatedGame;
   }

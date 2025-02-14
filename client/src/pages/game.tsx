@@ -164,8 +164,25 @@ export default function GamePage() {
     const aiPlayers = currentTeam.filter(player => player !== "human");
 
     try {
-      // Start team discussion
+      // Start discussion timer
+      timerRef.current = setInterval(() => {
+        setTimer(prev => {
+          if (prev <= 1) {
+            setIsDiscussing(false);
+            clearInterval(timerRef.current);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      // Sequential team discussion with random delays
       for (const aiPlayer of aiPlayers) {
+        // Random delay between AI responses (1-3 seconds)
+        await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+
+        if (!isDiscussing) break; // Stop if discussion time is up
+
         await discussMove.mutateAsync({
           model: aiPlayer,
           team: game.currentTurn === "red_turn" ? "red" : "blue",
@@ -176,36 +193,28 @@ export default function GamePage() {
         });
       }
 
-      // After discussion, get AI guess and initiate voting
-      const guessResult = await getAIGuess.mutateAsync(getAIClue.data);
-      if (guessResult?.guess) {
-        for (const aiPlayer of aiPlayers) {
-          await voteOnWord.mutateAsync({
-            model: aiPlayer,
-            team: game.currentTurn === "red_turn" ? "red" : "blue",
-            word: guessResult.guess
-          });
+      // Only proceed with voting if discussion is still active
+      if (isDiscussing) {
+        const guessResult = await getAIGuess.mutateAsync(getAIClue.data);
+        if (guessResult?.guess) {
+          for (const aiPlayer of aiPlayers) {
+            if (!isDiscussing) break;
+            await voteOnWord.mutateAsync({
+              model: aiPlayer,
+              team: game.currentTurn === "red_turn" ? "red" : "blue",
+              word: guessResult.guess
+            });
+          }
         }
       }
     } catch (error) {
       console.error("Error in team discussion:", error);
-      setIsDiscussing(false);
+    } finally {
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
+      setIsDiscussing(false);
     }
-
-    // Start discussion timer
-    timerRef.current = setInterval(() => {
-      setTimer(prev => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current);
-          setIsDiscussing(false);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
   };
 
   useEffect(() => {

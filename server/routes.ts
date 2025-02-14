@@ -6,6 +6,10 @@ import { insertGameSchema } from "@shared/schema";
 import type { Game, GameState, TeamDiscussionEntry, ConsensusVote, GameHistoryEntry } from "@shared/schema";
 import type { AIModel } from "./lib/ai-service";
 
+function getRandomDelay(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Set JSON content type for all API responses
   app.use('/api', (req, res, next) => {
@@ -153,6 +157,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "AI model is not part of the team" });
       }
 
+      // Add random delay to simulate natural conversation flow
+      await new Promise(resolve => setTimeout(resolve, getRandomDelay(500, 2000)));
+
       const teamDiscussion = game.teamDiscussion || [];
       const gameHistory = game.gameHistory || [];
 
@@ -174,8 +181,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         timestamp: Date.now()
       };
 
+      const updatedTeamDiscussion = [...teamDiscussion, newDiscussionEntry];
+
       await storage.updateGame(game.id, {
-        teamDiscussion: [...teamDiscussion, newDiscussionEntry]
+        teamDiscussion: updatedTeamDiscussion
       });
 
       res.json(newDiscussionEntry);
