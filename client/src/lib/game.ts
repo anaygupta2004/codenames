@@ -1,4 +1,4 @@
-import { type Game, type CardType } from "@shared/schema";
+import { type Game, type CardType, type AIModel } from "@shared/schema";
 
 export function generateGameWords(): string[] {
   const words = [
@@ -9,23 +9,30 @@ export function generateGameWords(): string[] {
   return shuffleArray(words);
 }
 
-export function createInitialGame(redSpymasterAI: boolean, blueSpymasterAI: boolean): Omit<Game, "id"> {
+export function createInitialGame(
+  redSpymasterAI: boolean, 
+  blueSpymasterAI: boolean,
+  redAIModel: AIModel = "gpt-4o",
+  blueAIModel: AIModel = "claude-3-5-sonnet-20241022"
+): Omit<Game, "id"> {
   const words = generateGameWords();
   const assignments = assignCards();
-  
+
   return {
     words,
-    redTeam: assignments.filter((type) => type === "red").map((_, i) => words[i]),
-    blueTeam: assignments.filter((type) => type === "blue").map((_, i) => words[i]),
-    assassin: words[assignments.findIndex((type) => type === "assassin")],
+    redTeam: words.filter((_, i) => assignments[i] === "red"),
+    blueTeam: words.filter((_, i) => assignments[i] === "blue"),
+    neutralWords: words.filter((_, i) => assignments[i] === "neutral"),
+    assassin: words[assignments.findIndex(type => type === "assassin")],
     currentTurn: Math.random() < 0.5 ? "red_turn" : "blue_turn",
     redScore: 0,
     blueScore: 0,
     gameState: "red_turn",
     redSpymaster: redSpymasterAI,
     blueSpymaster: blueSpymasterAI,
+    redAIModel,
+    blueAIModel,
     revealedCards: [],
-    aiModel: "gpt-4o"
   };
 }
 
