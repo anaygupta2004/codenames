@@ -3,14 +3,23 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { type Game } from "@shared/schema";
+import { type Game, type CardType } from "@shared/schema";
 import { useParams } from "wouter";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Switch } from "@/components/ui/switch";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 export default function GamePage() {
   const { id } = useParams();
   const { toast } = useToast();
   const aiTurnInProgress = useRef(false);
+  const [isSpymasterView, setIsSpymasterView] = useState(false);
+  const [gameLog, setGameLog] = useState<Array<{
+    team: string;
+    action: string;
+    result: "correct" | "wrong" | "assassin";
+    word?: string;
+  }>>([]);
 
   const { data: game, isLoading } = useQuery<Game>({
     queryKey: [`/api/games/${id}`],
@@ -51,6 +60,27 @@ export default function GamePage() {
 
   const makeGuess = useMutation({
     mutationFn: async (word: string) => {
+      if (!game) return;
+      const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+      let result: "correct" | "wrong" | "assassin";
+
+      if (game.redTeam.includes(word)) {
+        result = currentTeam === "red" ? "correct" : "wrong";
+      } else if (game.blueTeam.includes(word)) {
+        result = currentTeam === "blue" ? "correct" : "wrong";
+      } else if (game.assassin === word) {
+        result = "assassin";
+      } else {
+        result = "wrong";
+      }
+
+      setGameLog(prev => [...prev, {
+        team: currentTeam,
+        action: `guessed "${word}"`,
+        result,
+        word
+      }]);
+
       const res = await apiRequest("PATCH", `/api/games/${id}`, {
         revealedCards: [...(game?.revealedCards || []), word],
       });
@@ -84,6 +114,11 @@ export default function GamePage() {
         aiTurnInProgress.current = true;
         const clue = await getAIClue.mutateAsync();
         if (clue && !game.gameState?.includes("win")) {
+          setGameLog(prev => [...prev, {
+            team: isRedTurn ? "red" : "blue",
+            action: `AI gives clue: "${clue.word} (${clue.number})"`,
+            result: "correct"
+          }]);
           await getAIGuess.mutateAsync(clue);
         }
       } catch (error) {
@@ -99,8 +134,8 @@ export default function GamePage() {
     return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
   }
 
-  const getCardColor = (word: string) => {
-    if (game.revealedCards.includes(word)) {
+  const getCardColor = (word: string): string => {
+    if (isSpymasterView || game.revealedCards.includes(word)) {
       if (game.redTeam.includes(word)) return "bg-red-500";
       if (game.blueTeam.includes(word)) return "bg-blue-500";
       if (game.assassin === word) return "bg-gray-800";
@@ -109,12 +144,25 @@ export default function GamePage() {
     return "bg-white hover:bg-gray-50";
   };
 
-  const getTextColor = (word: string) => {
+  const getTextColor = (word: string): string => {
+    if (isSpymasterView) {
+      if (game.assassin === word) return "text-white";
+      return game.revealedCards.includes(word) ? "text-white" : "text-black";
+    }
     return game.revealedCards.includes(word) ? "text-white" : "text-gray-900";
   };
 
   const currentTeam = game.currentTurn === "red_turn" ? "Red" : "Blue";
   const isSpymasterAI = game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster;
+
+  const getLogEmoji = (result: "correct" | "wrong" | "assassin") => {
+    switch (result) {
+      case "correct": return "✅";
+      case "wrong": return "❌";
+      case "assassin": return "💀";
+      default: return "";
+    }
+  };
 
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
@@ -133,6 +181,15 @@ export default function GamePage() {
           <div className="text-blue-500 font-bold text-xl">Blue: {game.blueScore}</div>
         </div>
 
+        {/* Spymaster Toggle */}
+        <div className="flex items-center justify-center gap-2 mb-4">
+          <Switch 
+            checked={isSpymasterView} 
+            onCheckedChange={setIsSpymasterView}
+          />
+          <span className="font-medium">Spymaster View</span>
+        </div>
+
         {/* Show AI's clue if available */}
         {getAIClue.data && (
           <div className="mt-4 inline-block px-6 py-3 bg-primary/5 rounded-lg">
@@ -144,25 +201,54 @@ export default function GamePage() {
         )}
       </div>
 
-      {/* Game Board */}
-      <div className="max-w-5xl mx-auto grid grid-cols-5 gap-3">
-        {game.words.map((word) => (
-          <Card
-            key={word}
-            className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105`}
-            onClick={() => {
-              if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
-                makeGuess.mutate(word);
-              }
-            }}
-          >
-            <CardContent className="p-4 text-center">
-              <span className={`font-medium ${getTextColor(word)}`}>
-                {word}
-              </span>
+      <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Game Board */}
+        <div className="lg:col-span-3 grid grid-cols-5 gap-3">
+          {game.words.map((word) => (
+            <Card
+              key={word}
+              className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105`}
+              onClick={() => {
+                if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
+                  makeGuess.mutate(word);
+                }
+              }}
+            >
+              <CardContent className="p-4 text-center">
+                <span className={`font-medium ${getTextColor(word)}`}>
+                  {word}
+                </span>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        {/* Game Log */}
+        <div className="lg:col-span-1">
+          <Card className="h-full">
+            <CardContent className="p-4">
+              <h3 className="font-bold text-lg mb-4">Game Log</h3>
+              <ScrollArea className="h-[400px] pr-4">
+                <div className="space-y-2">
+                  {gameLog.map((log, index) => (
+                    <div 
+                      key={index} 
+                      className={`p-2 rounded text-sm ${
+                        log.team === "red" ? "bg-red-50" : "bg-blue-50"
+                      }`}
+                    >
+                      <span className="font-medium capitalize">{log.team}</span>
+                      {" "}
+                      {log.action}
+                      {" "}
+                      {getLogEmoji(log.result)}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
             </CardContent>
           </Card>
-        ))}
+        </div>
       </div>
 
       {/* Game End State */}
