@@ -223,6 +223,10 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
     messages: [{ role: 'user', content: prompt }],
   });
 
+  if (!response.content[0]?.type === 'text') {
+    throw new Error("Invalid response format from Anthropic");
+  }
+
   const content = response.content[0].text;
   const result = JSON.parse(content) as { word: string; number: number };
 
@@ -280,6 +284,10 @@ async function getAnthropicGuess(prompt: string): Promise<{ guess: string }> {
     messages: [{ role: 'user', content: prompt }],
   });
 
+  if (!response.content[0]?.type === 'text') {
+    throw new Error("Invalid response format from Anthropic");
+  }
+
   return JSON.parse(response.content[0].text) as { guess: string };
 }
 
@@ -325,6 +333,10 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
     messages: [{ role: 'user', content: prompt }],
   });
 
+  if (!response.content[0]?.type === 'text') {
+    throw new Error("Invalid response format from Anthropic");
+  }
+
   return JSON.parse(response.content[0].text) as { message: string; confidence: number };
 }
 
@@ -369,6 +381,10 @@ async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; re
     max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
   });
+
+  if (!response.content[0]?.type === 'text') {
+    throw new Error("Invalid response format from Anthropic");
+  }
 
   return JSON.parse(response.content[0].text) as { approved: boolean; reason: string };
 }

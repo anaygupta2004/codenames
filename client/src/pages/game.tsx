@@ -284,7 +284,8 @@ export default function GamePage() {
     if (!game) return null;
 
     const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-    const recentDiscussion = (game.teamDiscussion as TeamDiscussionEntry[])
+    const discussions = game.teamDiscussion || [];
+    const recentDiscussion = (discussions as TeamDiscussionEntry[])
       .filter(entry => entry.team === currentTeam)
       .sort((a, b) => b.timestamp - a.timestamp);
 
@@ -405,10 +406,8 @@ export default function GamePage() {
                       }`}
                     >
                       <span className="font-medium capitalize">{log.team}</span>
-                      {" "}
-                      {log.action}
-                      {" "}
-                      {getLogEmoji(log.result)}
+                       {log.action}
+                       {getLogEmoji(log.result)}
                     </div>
                   ))}
                 </div>

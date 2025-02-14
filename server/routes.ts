@@ -71,13 +71,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "AI model is not part of the team" });
       }
 
+      const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
+      const gameHistory = (game.gameHistory || []) as GameHistoryEntry[];
+
       const discussion = await discussAndVote(
         model,
         team,
         game.words,
         req.body.clue,
-        game.teamDiscussion as TeamDiscussionEntry[],
-        game.gameHistory as GameHistoryEntry[],
+        teamDiscussion,
+        gameHistory,
         game.revealedCards
       );
 
@@ -90,11 +93,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       await storage.updateGame(game.id, {
-        teamDiscussion: [...(game.teamDiscussion as TeamDiscussionEntry[]), newDiscussionEntry]
+        teamDiscussion: [...teamDiscussion, newDiscussionEntry]
       });
 
       res.json(newDiscussionEntry);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error in AI discussion:", error);
       res.status(500).json({ 
         message: "Failed to process AI discussion",
@@ -114,11 +117,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(400).json({ message: "AI model is not part of the team" });
     }
 
+    const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
+    const consensusVotes = (game.consensusVotes || []) as ConsensusVote[];
+
     const vote = await makeConsensusVote(
       model,
       team,
       word,
-      game.teamDiscussion as TeamDiscussionEntry[]
+      teamDiscussion
     );
 
     const newVote: ConsensusVote = {
@@ -130,7 +136,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     };
 
     const updatedGame = await storage.updateGame(game.id, {
-      consensusVotes: [...(game.consensusVotes as ConsensusVote[]), newVote]
+      consensusVotes: [...consensusVotes, newVote]
     });
 
     // Check if all AI team members have voted and approved
