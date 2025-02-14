@@ -7,8 +7,13 @@ import { createInitialGame } from "@/lib/game";
 import type { AIModel, PlayerType } from "@shared/schema";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { SiGooglegemini, SiOpenai } from 'react-icons/si';
-import { GrCloudComputer } from 'react-icons/gr';
+import { 
+  SiGooglegemini, 
+  SiOpenai, 
+  SiMeta, 
+  SiAnthropic,
+  SiX 
+} from 'react-icons/si';
 
 type TeamConfig = {
   spymaster: PlayerType;
@@ -30,19 +35,19 @@ const AIOptions = [
   { 
     value: "claude-3-5-sonnet-20241022", 
     label: "Claude 3.5 Sonnet",
-    icon: "🎭",
+    icon: <SiAnthropic className="text-gray-700" />,
     description: "Anthropic's latest model"
   },
   { 
     value: "grok-2-1212", 
     label: "Grok 2",
-    icon: "⚡",
+    icon: <SiX className="text-black" />,
     description: "xAI's newest model"
   },
   {
     value: "llama-7b",
     label: "LLama 7B",
-    icon: "🦙",
+    icon: <SiMeta className="text-[#0668E1]" />,
     description: "Meta's open source model"
   },
   {
@@ -108,7 +113,10 @@ export default function Home() {
         >
           <SelectTrigger className="w-full bg-white">
             <SelectValue placeholder={`Select ${role}`}>
-              {AIOptions.find(opt => opt.value === actualValue)?.label}
+              <div className="flex items-center space-x-2">
+                {actualValue && AIOptions.find(opt => opt.value === actualValue)?.icon}
+                <span>{AIOptions.find(opt => opt.value === actualValue)?.label}</span>
+              </div>
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
