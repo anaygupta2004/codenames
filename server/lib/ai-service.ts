@@ -7,8 +7,17 @@ import { type CardType, type GameHistoryEntry, type TeamDiscussionEntry, type Co
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212";
-type AIService = "openai" | "anthropic" | "xai";
+export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212";
+export type AIService = "openai" | "anthropic" | "xai";
+
+const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212"];
+
+function validateModel(model: string): AIModel {
+  if (!VALID_MODELS.includes(model)) {
+    throw new Error(`Invalid AI model: ${model}. Valid models are: ${VALID_MODELS.join(", ")}`);
+  }
+  return model as AIModel;
+}
 
 export async function discussAndVote(
   model: AIModel,
@@ -103,13 +112,15 @@ Respond in JSON format: { "approved": boolean, "reason": "explanation of your de
 }
 
 export async function getSpymasterClue(
-  model: AIModel,
+  model: string | AIModel,
   words: string[],
   teamWords: string[],
   opposingWords: string[],
   assassinWord: string,
   gameHistory: GameHistoryEntry[]
 ): Promise<{ word: string; number: number }> {
+  const validatedModel = validateModel(model as string);
+
   const previousClues = gameHistory
     .filter(entry => entry.type === "clue")
     .map(entry => entry.content)
@@ -140,7 +151,7 @@ The clue must follow Codenames rules:
 - Avoid words that might lead to opponent or assassin words
 - Avoid words similar to previously failed clues`;
 
-  switch (getAIService(model)) {
+  switch (getAIService(validatedModel)) {
     case "openai":
       return await getOpenAIClue(prompt);
     case "anthropic":
@@ -413,5 +424,5 @@ function getAIService(model: AIModel): AIService {
   if (model === "gpt-4o") return "openai";
   if (model === "claude-3-5-sonnet-20241022") return "anthropic";
   if (model === "grok-2-1212") return "xai";
-  throw new Error("Invalid AI model");
+  throw new Error(`Invalid AI model: ${model}`);
 }

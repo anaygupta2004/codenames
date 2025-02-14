@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { getSpymasterClue, getGuesserMove, discussAndVote, makeConsensusVote } from "./lib/ai-service";
 import { insertGameSchema } from "@shared/schema";
 import type { Game, GameState, TeamDiscussionEntry, ConsensusVote, GameHistoryEntry } from "@shared/schema";
+import type { AIModel } from "./lib/ai-service";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Set JSON content type for all API responses
@@ -41,8 +42,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const currentTeamWords = isRedTurn ? game.redTeam : game.blueTeam;
       const opposingTeamWords = isRedTurn ? game.blueTeam : game.redTeam;
 
+      // Map the spymaster to a specific AI model
+      const spymasterModel: AIModel = isRedTurn ? 
+        (typeof game.redSpymaster === 'string' ? game.redSpymaster as AIModel : "gpt-4o") :
+        (typeof game.blueSpymaster === 'string' ? game.blueSpymaster as AIModel : "gpt-4o");
+
       const clue = await getSpymasterClue(
-        isRedTurn ? game.redSpymaster : game.blueSpymaster,
+        spymasterModel,
         game.words,
         currentTeamWords,
         opposingTeamWords,
@@ -67,8 +73,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Invalid clue format" });
       }
 
+      // Map the current player to a specific AI model
+      const currentPlayer = game.currentTurn === "red_turn" ? game.redPlayers[0] : game.bluePlayers[0];
+      const playerModel: AIModel = typeof currentPlayer === 'string' ? currentPlayer as AIModel : "gpt-4o";
+
       const guess = await getGuesserMove(
-        game.currentTurn === "red_turn" ? game.redPlayers[0] : game.bluePlayers[0],
+        playerModel,
         game.words,
         clue,
         game.revealedCards,
