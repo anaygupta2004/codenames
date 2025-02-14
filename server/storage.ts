@@ -1,4 +1,4 @@
-import { games, type Game, type InsertGame } from "@shared/schema";
+import { games, type Game, type InsertGame, type TeamDiscussionEntry, type ConsensusVote } from "@shared/schema";
 
 export interface IStorage {
   createGame(game: InsertGame): Promise<Game>;
@@ -23,7 +23,9 @@ export class MemStorage implements IStorage {
       redScore: 0,
       blueScore: 0,
       revealedCards: [],
-      aiModel: insertGame.aiModel || "gpt-4o" // Ensure aiModel is set
+      gameHistory: [],
+      teamDiscussion: [],
+      consensusVotes: []
     };
     this.games.set(id, game);
     return game;

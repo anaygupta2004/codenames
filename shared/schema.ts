@@ -41,7 +41,7 @@ export type Game = typeof games.$inferSelect;
 
 export type CardType = "red" | "blue" | "neutral" | "assassin";
 export type GameState = "red_turn" | "blue_turn" | "red_win" | "blue_win";
-export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212";
+export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | "llama-7b" | "gemini-pro";
 export type PlayerType = "human" | AIModel;
 
 export type GameHistoryEntry = {

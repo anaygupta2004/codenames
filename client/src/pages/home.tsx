@@ -7,11 +7,51 @@ import { createInitialGame } from "@/lib/game";
 import type { AIModel, PlayerType } from "@shared/schema";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { SiGooglegemini, SiOpenai } from 'react-icons/si';
+import { GrCloudComputer } from 'react-icons/gr';
 
 type TeamConfig = {
   spymaster: PlayerType;
   operatives: PlayerType[];
 };
+
+const AIOptions = [
+  { 
+    value: "human", 
+    label: "Human Player",
+    icon: "👤"
+  },
+  { 
+    value: "gpt-4o", 
+    label: "GPT-4 Omega",
+    icon: <SiOpenai className="text-blue-500" />,
+    description: "OpenAI's most advanced model"
+  },
+  { 
+    value: "claude-3-5-sonnet-20241022", 
+    label: "Claude 3.5 Sonnet",
+    icon: "🎭",
+    description: "Anthropic's latest model"
+  },
+  { 
+    value: "grok-2-1212", 
+    label: "Grok 2",
+    icon: "⚡",
+    description: "xAI's newest model"
+  },
+  {
+    value: "llama-7b",
+    label: "LLama 7B",
+    icon: "🦙",
+    description: "Meta's open source model"
+  },
+  {
+    value: "gemini-pro",
+    label: "Gemini Pro",
+    icon: <SiGooglegemini className="text-[#4285f4]" />,
+    description: "Google's most capable model"
+  }
+];
 
 export default function Home() {
   const [_, navigate] = useLocation();
@@ -47,70 +87,78 @@ export default function Home() {
     }
   };
 
-  const AIOptions = [
-    { value: "human", label: "Human Player" },
-    { value: "gpt-4o", label: "GPT-4 Omega" },
-    { value: "claude-3-5-sonnet-20241022", label: "Claude 3.5 Sonnet" },
-    { value: "grok-2-1212", label: "Grok 2" }
-  ];
+  const renderPlayerSelect = (
+    team: "red" | "blue",
+    role: "spymaster" | "operative",
+    index?: number,
+    value?: PlayerType,
+    onChange?: (value: PlayerType) => void
+  ) => {
+    const currentTeam = team === "red" ? redTeam : blueTeam;
+    const actualValue = role === "spymaster" ? currentTeam.spymaster : value;
+
+    return (
+      <div className="space-y-2">
+        <label className="text-sm font-medium capitalize">
+          {role} {index !== undefined && index + 1}
+        </label>
+        <Select
+          value={actualValue}
+          onValueChange={(val) => onChange?.(val as PlayerType)}
+        >
+          <SelectTrigger className="w-full bg-white">
+            <SelectValue placeholder={`Select ${role}`}>
+              {AIOptions.find(opt => opt.value === actualValue)?.label}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {AIOptions.map(option => (
+              <SelectItem 
+                key={option.value} 
+                value={option.value}
+                className="flex items-center space-x-2 p-3 cursor-pointer hover:bg-gray-50"
+              >
+                <div className="flex items-center space-x-3">
+                  <span className="text-xl">{typeof option.icon === 'string' ? option.icon : option.icon}</span>
+                  <div>
+                    <div className="font-medium">{option.label}</div>
+                    <div className="text-xs text-gray-500">{option.description}</div>
+                  </div>
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    );
+  };
 
   return (
-    <div className="min-h-screen bg-neutral-50 flex items-center justify-center p-4">
-      <Card className="w-full max-w-2xl">
-        <CardHeader>
-          <CardTitle className="text-3xl font-bold text-center text-primary">
+    <div className="min-h-screen bg-gradient-to-br from-neutral-50 to-neutral-100 flex items-center justify-center p-4">
+      <Card className="w-full max-w-3xl shadow-lg">
+        <CardHeader className="space-y-1 text-center">
+          <CardTitle className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-red-600">
             Codenames AI
           </CardTitle>
+          <p className="text-gray-500">Choose your AI teammates and start playing!</p>
         </CardHeader>
         <CardContent className="space-y-8">
           {/* Red Team Configuration */}
           <div className="space-y-4">
-            <h2 className="text-xl font-semibold text-red-600">Red Team</h2>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Spymaster</label>
-                <Select 
-                  value={redTeam.spymaster} 
-                  onValueChange={(value) => setRedTeam(prev => ({
-                    ...prev,
-                    spymaster: value as PlayerType
-                  }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select Spymaster" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {AIOptions.map(option => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="flex items-center space-x-2">
+              <div className="h-1 w-1 rounded-full bg-red-500" />
+              <h2 className="text-xl font-semibold text-red-600">Red Team</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-red-50/50 rounded-lg">
+              {renderPlayerSelect("red", "spymaster", undefined, undefined, 
+                (value) => setRedTeam(prev => ({ ...prev, spymaster: value })))}
               {redTeam.operatives.map((operative, index) => (
-                <div key={index} className="space-y-2">
-                  <label className="text-sm font-medium">Operative {index + 1}</label>
-                  <Select
-                    value={operative}
-                    onValueChange={(value) => setRedTeam(prev => ({
+                <div key={index}>
+                  {renderPlayerSelect("red", "operative", index, operative,
+                    (value) => setRedTeam(prev => ({
                       ...prev,
-                      operatives: prev.operatives.map((op, i) => 
-                        i === index ? value as PlayerType : op
-                      )
-                    }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select Operative" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {AIOptions.map(option => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                      operatives: prev.operatives.map((op, i) => i === index ? value : op)
+                    })))}
                 </div>
               ))}
             </div>
@@ -118,59 +166,27 @@ export default function Home() {
 
           {/* Blue Team Configuration */}
           <div className="space-y-4">
-            <h2 className="text-xl font-semibold text-blue-600">Blue Team</h2>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Spymaster</label>
-                <Select
-                  value={blueTeam.spymaster}
-                  onValueChange={(value) => setBlueTeam(prev => ({
-                    ...prev,
-                    spymaster: value as PlayerType
-                  }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select Spymaster" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {AIOptions.map(option => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="flex items-center space-x-2">
+              <div className="h-1 w-1 rounded-full bg-blue-500" />
+              <h2 className="text-xl font-semibold text-blue-600">Blue Team</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-blue-50/50 rounded-lg">
+              {renderPlayerSelect("blue", "spymaster", undefined, undefined,
+                (value) => setBlueTeam(prev => ({ ...prev, spymaster: value })))}
               {blueTeam.operatives.map((operative, index) => (
-                <div key={index} className="space-y-2">
-                  <label className="text-sm font-medium">Operative {index + 1}</label>
-                  <Select
-                    value={operative}
-                    onValueChange={(value) => setBlueTeam(prev => ({
+                <div key={index}>
+                  {renderPlayerSelect("blue", "operative", index, operative,
+                    (value) => setBlueTeam(prev => ({
                       ...prev,
-                      operatives: prev.operatives.map((op, i) => 
-                        i === index ? value as PlayerType : op
-                      )
-                    }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select Operative" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {AIOptions.map(option => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                      operatives: prev.operatives.map((op, i) => i === index ? value : op)
+                    })))}
                 </div>
               ))}
             </div>
           </div>
 
           <Button
-            className="w-full bg-green-600 hover:bg-green-700 text-white"
+            className="w-full bg-gradient-to-r from-blue-600 to-red-600 hover:from-blue-700 hover:to-red-700 text-white font-bold py-6 text-lg shadow-lg transform transition hover:scale-[1.02]"
             size="lg"
             onClick={startGame}
             disabled={isLoading}
