@@ -5,6 +5,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { type Game } from "@shared/schema";
 import { useParams } from "wouter";
+import { useEffect } from "react";
 
 export default function GamePage() {
   const { id } = useParams();
@@ -22,6 +23,25 @@ export default function GamePage() {
     onError: (error) => {
       toast({
         title: "Error getting AI clue",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const getAIGuess = useMutation({
+    mutationFn: async (clue: { word: string; number: number }) => {
+      const res = await apiRequest("POST", `/api/games/${id}/ai/guess`, { clue });
+      return res.json();
+    },
+    onSuccess: async (data) => {
+      if (data.guess) {
+        await makeGuess.mutateAsync(data.guess);
+      }
+    },
+    onError: (error) => {
+      toast({
+        title: "Error getting AI guess",
         description: error.message,
         variant: "destructive",
       });
@@ -46,6 +66,32 @@ export default function GamePage() {
       });
     },
   });
+
+  // Handle AI turns
+  useEffect(() => {
+    if (!game || game.gameState?.includes("win")) return;
+
+    const isRedTurn = game.currentTurn === "red_turn";
+    const currentSpymasterIsAI = isRedTurn ? game.redSpymaster : game.blueSpymaster;
+
+    const handleAITurn = async () => {
+      try {
+        // Get AI clue if it's the spymaster's turn
+        if (currentSpymasterIsAI && !getAIClue.data) {
+          const clue = await getAIClue.mutateAsync();
+          // If we got a clue and the game is still going, make a guess
+          if (clue && !game.gameState?.includes("win")) {
+            await getAIGuess.mutateAsync(clue);
+          }
+        }
+      } catch (error) {
+        console.error("Error in AI turn:", error);
+      }
+    };
+
+    // Run AI turn logic
+    handleAITurn();
+  }, [game, getAIClue.data, getAIGuess]);
 
   if (isLoading || !game) {
     return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
