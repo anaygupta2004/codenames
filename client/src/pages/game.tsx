@@ -38,33 +38,39 @@ export default function GamePage() {
   const getAIClue = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/clue`);
-      return res.json();
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      return data;
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       toast({
         title: "Error getting AI clue",
         description: error.message,
         variant: "destructive",
       });
+      aiTurnInProgress.current = false;
     },
   });
 
   const getAIGuess = useMutation({
     mutationFn: async (clue: { word: string; number: number }) => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/guess`, { clue });
-      return res.json();
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      return data;
     },
     onSuccess: async (data) => {
       if (data.guess) {
         await makeGuess.mutateAsync(data.guess);
       }
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       toast({
         title: "Error getting AI guess",
         description: error.message,
         variant: "destructive",
       });
+      aiTurnInProgress.current = false;
     },
   });
 
@@ -94,13 +100,15 @@ export default function GamePage() {
       const res = await apiRequest("PATCH", `/api/games/${id}`, {
         revealedCards: [...(game?.revealedCards || []), word],
       });
-      return res.json();
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
       aiTurnInProgress.current = false;
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       toast({
         title: "Error making guess",
         description: error.message,

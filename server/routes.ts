@@ -6,69 +6,132 @@ import { insertGameSchema } from "@shared/schema";
 import type { Game, GameState, TeamDiscussionEntry, ConsensusVote, GameHistoryEntry } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Set JSON content type for all API responses
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Content-Type', 'application/json');
+    next();
+  });
+
   app.post("/api/games", async (req, res) => {
-    const gameData = insertGameSchema.parse(req.body);
-    const game = await storage.createGame(gameData);
-    res.json(game);
+    try {
+      const gameData = insertGameSchema.parse(req.body);
+      const game = await storage.createGame(gameData);
+      res.json(game);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
   });
 
   app.get("/api/games/:id", async (req, res) => {
-    const game = await storage.getGame(Number(req.params.id));
-    if (!game) return res.status(404).json({ message: "Game not found" });
-    res.json(game);
+    try {
+      const game = await storage.getGame(Number(req.params.id));
+      if (!game) return res.status(404).json({ error: "Game not found" });
+      res.json(game);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/games/:id/ai/clue", async (req, res) => {
+    try {
+      const game = await storage.getGame(Number(req.params.id));
+      if (!game) return res.status(404).json({ error: "Game not found" });
+
+      const isRedTurn = game.currentTurn === "red_turn";
+      const currentTeamWords = isRedTurn ? game.redTeam : game.blueTeam;
+      const opposingTeamWords = isRedTurn ? game.blueTeam : game.redTeam;
+
+      const clue = await getSpymasterClue(
+        isRedTurn ? game.redSpymaster : game.blueSpymaster,
+        game.words,
+        currentTeamWords,
+        opposingTeamWords,
+        game.assassin,
+        (game.gameHistory || []) as GameHistoryEntry[]
+      );
+
+      res.json(clue);
+    } catch (error: any) {
+      console.error("Error in AI clue:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/games/:id/ai/guess", async (req, res) => {
+    try {
+      const game = await storage.getGame(Number(req.params.id));
+      if (!game) return res.status(404).json({ error: "Game not found" });
+
+      const { clue } = req.body;
+      if (!clue || !clue.word || typeof clue.number !== 'number') {
+        return res.status(400).json({ error: "Invalid clue format" });
+      }
+
+      const guess = await getGuesserMove(
+        game.currentTurn === "red_turn" ? game.redPlayers[0] : game.bluePlayers[0],
+        game.words,
+        clue,
+        game.revealedCards,
+        (game.gameHistory || []) as GameHistoryEntry[]
+      );
+
+      res.json({ guess });
+    } catch (error: any) {
+      console.error("Error in AI guess:", error);
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.patch("/api/games/:id", async (req, res) => {
-    const game = await storage.getGame(Number(req.params.id));
-    if (!game) return res.status(404).json({ message: "Game not found" });
+    try {
+      const game = await storage.getGame(Number(req.params.id));
+      if (!game) return res.status(404).json({ error: "Game not found" });
 
-    const updates: Partial<Game> = {};
+      const updates: Partial<Game> = {};
 
-    // Handle revealed cards
-    if (req.body.revealedCards) {
-      const newCard = req.body.revealedCards[req.body.revealedCards.length - 1];
+      if (req.body.revealedCards) {
+        const newCard = req.body.revealedCards[req.body.revealedCards.length - 1];
 
-      // Update score based on the revealed card
-      if (game.redTeam.includes(newCard)) {
-        updates.redScore = game.redScore + 1;
-      } else if (game.blueTeam.includes(newCard)) {
-        updates.blueScore = game.blueScore + 1;
+        if (game.redTeam.includes(newCard)) {
+          updates.redScore = game.redScore + 1;
+        } else if (game.blueTeam.includes(newCard)) {
+          updates.blueScore = game.blueScore + 1;
+        }
+
+        if (newCard === game.assassin) {
+          updates.gameState = game.currentTurn === "red_turn" ? "blue_win" : "red_win";
+        }
+
+        updates.revealedCards = req.body.revealedCards;
       }
 
-      // Check for assassin
-      if (newCard === game.assassin) {
-        updates.gameState = game.currentTurn === "red_turn" ? "blue_win" : "red_win";
+      if (req.body.revealedCards && !updates.gameState) {
+        updates.currentTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
       }
 
-      updates.revealedCards = req.body.revealedCards;
-    }
+      if (game.redTeam.every(word => req.body.revealedCards.includes(word))) {
+        updates.gameState = "red_win";
+      } else if (game.blueTeam.every(word => req.body.revealedCards.includes(word))) {
+        updates.gameState = "blue_win";
+      }
 
-    // Switch turns if a card was revealed
-    if (req.body.revealedCards && !updates.gameState) {
-      updates.currentTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+      const updatedGame = await storage.updateGame(game.id, updates);
+      res.json(updatedGame);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
-
-    // Check for victory conditions
-    if (game.redTeam.every(word => req.body.revealedCards.includes(word))) {
-      updates.gameState = "red_win";
-    } else if (game.blueTeam.every(word => req.body.revealedCards.includes(word))) {
-      updates.gameState = "blue_win";
-    }
-
-    const updatedGame = await storage.updateGame(game.id, updates);
-    res.json(updatedGame);
   });
 
   app.post("/api/games/:id/ai/discuss", async (req, res) => {
     try {
       const game = await storage.getGame(Number(req.params.id));
-      if (!game) return res.status(404).json({ message: "Game not found" });
+      if (!game) return res.status(404).json({ error: "Game not found" });
 
       const { model, team } = req.body;
       const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
 
       if (!currentTeamPlayers.includes(model)) {
-        return res.status(400).json({ message: "AI model is not part of the team" });
+        return res.status(400).json({ error: "AI model is not part of the team" });
       }
 
       const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
@@ -99,55 +162,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(newDiscussionEntry);
     } catch (error: any) {
       console.error("Error in AI discussion:", error);
-      res.status(500).json({ 
-        message: "Failed to process AI discussion",
-        error: error.message 
-      });
+      res.status(500).json({ error: error.message });
     }
   });
 
   app.post("/api/games/:id/ai/vote", async (req, res) => {
-    const game = await storage.getGame(Number(req.params.id));
-    if (!game) return res.status(404).json({ message: "Game not found" });
+    try {
+      const game = await storage.getGame(Number(req.params.id));
+      if (!game) return res.status(404).json({ error: "Game not found" });
 
-    const { model, team, word } = req.body;
-    const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
+      const { model, team, word } = req.body;
+      const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
 
-    if (!currentTeamPlayers.includes(model)) {
-      return res.status(400).json({ message: "AI model is not part of the team" });
+      if (!currentTeamPlayers.includes(model)) {
+        return res.status(400).json({ error: "AI model is not part of the team" });
+      }
+
+      const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
+      const consensusVotes = (game.consensusVotes || []) as ConsensusVote[];
+
+      const vote = await makeConsensusVote(
+        model,
+        team,
+        word,
+        teamDiscussion
+      );
+
+      const newVote: ConsensusVote = {
+        team,
+        player: model,
+        word,
+        approved: vote.approved,
+        timestamp: Date.now()
+      };
+
+      const updatedGame = await storage.updateGame(game.id, {
+        consensusVotes: [...consensusVotes, newVote]
+      });
+
+      const teamVotes = (updatedGame.consensusVotes as ConsensusVote[])
+        .filter(v => v.team === team && v.word === word);
+      const teamAIPlayers = currentTeamPlayers.filter(p => p !== "human");
+      const allApproved = teamVotes.length === teamAIPlayers.length &&
+        teamVotes.every(v => v.approved);
+
+      res.json({ vote: newVote, allApproved });
+    } catch (error: any) {
+      console.error("Error in AI vote:", error);
+      res.status(500).json({ error: error.message });
     }
-
-    const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
-    const consensusVotes = (game.consensusVotes || []) as ConsensusVote[];
-
-    const vote = await makeConsensusVote(
-      model,
-      team,
-      word,
-      teamDiscussion
-    );
-
-    const newVote: ConsensusVote = {
-      team,
-      player: model,
-      word,
-      approved: vote.approved,
-      timestamp: Date.now()
-    };
-
-    const updatedGame = await storage.updateGame(game.id, {
-      consensusVotes: [...consensusVotes, newVote]
-    });
-
-    // Check if all AI team members have voted and approved
-    const teamVotes = (updatedGame.consensusVotes as ConsensusVote[]).filter(v =>
-      v.team === team && v.word === word
-    );
-    const teamAIPlayers = currentTeamPlayers.filter(p => p !== "human");
-    const allApproved = teamVotes.length === teamAIPlayers.length &&
-      teamVotes.every(v => v.approved);
-
-    res.json({ vote: newVote, allApproved });
   });
 
   const httpServer = createServer(app);
