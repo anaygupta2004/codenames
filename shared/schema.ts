@@ -21,6 +21,9 @@ export const games = pgTable("games", {
   revealedCards: text("revealed_cards").array().notNull().default([]),
   // Game history for AI context
   gameHistory: text("game_history").array().notNull().default([]), // [{turn: "red", type: "clue", content: "nature 3"}, {turn: "red", type: "guess", content: "TREE", result: "correct"}]
+  // AI team discussion
+  teamDiscussion: text("team_discussion").array().notNull().default([]), // [{team: "red", player: "gpt-4o", message: "I think TREE fits the clue because...", confidence: 0.8}]
+  consensusVotes: text("consensus_votes").array().notNull().default([]), // [{team: "red", player: "gpt-4o", word: "TREE", approved: true}]
 });
 
 export const insertGameSchema = createInsertSchema(games).omit({
@@ -29,6 +32,8 @@ export const insertGameSchema = createInsertSchema(games).omit({
   blueScore: true,
   revealedCards: true,
   gameHistory: true,
+  teamDiscussion: true,
+  consensusVotes: true,
 });
 
 export type InsertGame = z.infer<typeof insertGameSchema>;
@@ -44,4 +49,20 @@ export type GameHistoryEntry = {
   type: "clue" | "guess";
   content: string;
   result?: "correct" | "wrong" | "assassin";
+};
+
+export type TeamDiscussionEntry = {
+  team: "red" | "blue";
+  player: AIModel;
+  message: string;
+  confidence: number;
+  timestamp: number;
+};
+
+export type ConsensusVote = {
+  team: "red" | "blue";
+  player: AIModel;
+  word: string;
+  approved: boolean;
+  timestamp: number;
 };

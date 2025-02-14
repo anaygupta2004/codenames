@@ -3,11 +3,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { type Game, type CardType } from "@shared/schema";
+import { type Game, type CardType, type TeamDiscussionEntry } from "@shared/schema";
 import { useParams } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { AlertCircle, CheckCircle2, XCircle } from "lucide-react";
 
 export default function GamePage() {
   const { id } = useParams();
@@ -20,6 +21,9 @@ export default function GamePage() {
     result: "correct" | "wrong" | "assassin";
     word?: string;
   }>>([]);
+  const [timer, setTimer] = useState<number>(30);
+  const [isDiscussing, setIsDiscussing] = useState(false);
+  const timerRef = useRef<NodeJS.Timeout>();
 
   const { data: game, isLoading } = useQuery<Game>({
     queryKey: [`/api/games/${id}`],
@@ -100,9 +104,71 @@ export default function GamePage() {
     },
   });
 
-  // Handle AI turns
+  const discussMove = useMutation({
+    mutationFn: async (params: { model: string, team: "red" | "blue", clue: any }) => {
+      const res = await apiRequest("POST", `/api/games/${id}/ai/discuss`, params);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+    }
+  });
+
+  const voteOnWord = useMutation({
+    mutationFn: async (params: { model: string, team: "red" | "blue", word: string }) => {
+      const res = await apiRequest("POST", `/api/games/${id}/ai/vote`, params);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+      if (data.allApproved) {
+        makeGuess.mutate(data.vote.word);
+        setIsDiscussing(false);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+        }
+      }
+    }
+  });
+
+  const startDiscussion = async () => {
+    if (!game) return;
+
+    setIsDiscussing(true);
+    setTimer(30);
+
+    const currentTeam = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
+    const aiPlayers = currentTeam.filter(player => player !== "human");
+
+    for (const aiPlayer of aiPlayers) {
+      await discussMove.mutateAsync({
+        model: aiPlayer,
+        team: game.currentTurn === "red_turn" ? "red" : "blue",
+        clue: getAIClue.data
+      });
+    }
+
+    timerRef.current = setInterval(() => {
+      setTimer(prev => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
   useEffect(() => {
-    if (!game || game.gameState?.includes("win") || aiTurnInProgress.current) return;
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!game || game.gameState?.includes("win") || aiTurnInProgress.current || isDiscussing) return;
 
     const isRedTurn = game.currentTurn === "red_turn";
     const currentSpymasterIsAI = isRedTurn ? game.redSpymaster : game.blueSpymaster;
@@ -119,6 +185,7 @@ export default function GamePage() {
             action: `AI gives clue: "${clue.word} (${clue.number})"`,
             result: "correct"
           }]);
+          startDiscussion(); //Start discussion before getting AI guess
           await getAIGuess.mutateAsync(clue);
         }
       } catch (error) {
@@ -164,52 +231,91 @@ export default function GamePage() {
     }
   };
 
+  const renderAIDiscussion = () => {
+    if (!game) return null;
+
+    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    const recentDiscussion = game.teamDiscussion
+      .filter(entry => entry.team === currentTeam)
+      .sort((a, b) => b.timestamp - a.timestamp);
+
+    return (
+      <Card className="mt-4">
+        <CardContent className="p-4">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-bold text-lg">AI Team Discussion</h3>
+            {isDiscussing && (
+              <div className="text-sm font-medium">
+                Time remaining: {timer}s
+              </div>
+            )}
+          </div>
+
+          {!isDiscussing && game.currentTurn && !game.gameState?.includes("win") && (
+            <Button
+              onClick={startDiscussion}
+              className="w-full mb-4"
+            >
+              Start Team Discussion
+            </Button>
+          )}
+
+          <ScrollArea className="h-[200px]">
+            <div className="space-y-2">
+              {recentDiscussion.map((entry, index) => (
+                <div
+                  key={index}
+                  className={`p-3 rounded-lg ${
+                    entry.team === "red" ? "bg-red-50" : "bg-blue-50"
+                  }`}
+                >
+                  <div className="flex justify-between mb-1">
+                    <span className="font-medium">{entry.player}</span>
+                    <span className="text-sm text-gray-500">
+                      Confidence: {Math.round(entry.confidence * 100)}%
+                    </span>
+                  </div>
+                  <p className="text-sm">{entry.message}</p>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        </CardContent>
+      </Card>
+    );
+  };
+
+
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
-      {/* Game Header */}
       <div className="mb-8 text-center">
         <h1 className="text-3xl font-bold mb-4">Codenames AI</h1>
-
-        {/* Score and Turn Indicator */}
         <div className="flex justify-center items-center gap-6 mb-4">
           <div className="text-red-500 font-bold text-xl">Red: {game.redScore}</div>
           <div className={`px-6 py-2 rounded-full font-semibold ${
             game.currentTurn === "red_turn" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
           }`}>
-            {currentTeam}'s Turn
+            {currentTeam}'s Turn {isDiscussing && `(Discussing: ${timer}s)`}
           </div>
           <div className="text-blue-500 font-bold text-xl">Blue: {game.blueScore}</div>
         </div>
-
-        {/* Spymaster Toggle */}
         <div className="flex items-center justify-center gap-2 mb-4">
-          <Switch 
-            checked={isSpymasterView} 
+          <Switch
+            checked={isSpymasterView}
             onCheckedChange={setIsSpymasterView}
           />
           <span className="font-medium">Spymaster View</span>
         </div>
-
-        {/* Show AI's clue if available */}
-        {getAIClue.data && (
-          <div className="mt-4 inline-block px-6 py-3 bg-primary/5 rounded-lg">
-            <span className="font-semibold mr-2">AI Clue:</span>
-            <span className="text-lg">
-              {getAIClue.data.word} ({getAIClue.data.number})
-            </span>
-          </div>
-        )}
       </div>
 
-      <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Game Board */}
-        <div className="lg:col-span-3 grid grid-cols-5 gap-3">
+      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="lg:col-span-8 grid grid-cols-5 gap-3">
           {game.words.map((word) => (
             <Card
               key={word}
               className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105`}
               onClick={() => {
-                if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
+                if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current && !isDiscussing) {
                   makeGuess.mutate(word);
                 }
               }}
@@ -223,16 +329,16 @@ export default function GamePage() {
           ))}
         </div>
 
-        {/* Game Log */}
-        <div className="lg:col-span-1">
-          <Card className="h-full">
+        <div className="lg:col-span-4 space-y-4">
+          {renderAIDiscussion()}
+          <Card>
             <CardContent className="p-4">
               <h3 className="font-bold text-lg mb-4">Game Log</h3>
-              <ScrollArea className="h-[400px] pr-4">
+              <ScrollArea className="h-[200px]">
                 <div className="space-y-2">
                   {gameLog.map((log, index) => (
-                    <div 
-                      key={index} 
+                    <div
+                      key={index}
                       className={`p-2 rounded text-sm ${
                         log.team === "red" ? "bg-red-50" : "bg-blue-50"
                       }`}
@@ -251,7 +357,6 @@ export default function GamePage() {
         </div>
       </div>
 
-      {/* Game End State */}
       {game.gameState?.includes("win") && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center">
           <Card className="w-96">
