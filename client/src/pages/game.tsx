@@ -163,18 +163,34 @@ export default function GamePage() {
     const currentTeam = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
     const aiPlayers = currentTeam.filter(player => player !== "human");
 
+    // Start team discussion
     for (const aiPlayer of aiPlayers) {
       await discussMove.mutateAsync({
         model: aiPlayer,
         team: game.currentTurn === "red_turn" ? "red" : "blue",
-        clue: getAIClue.data // Pass the entire clue object with word and number
+        clue: getAIClue.data
       });
+    }
+
+    // After discussion, initiate voting
+    if (getAIClue.data) {
+      const proposedWord = getAIGuess.data?.guess;
+      if (proposedWord) {
+        for (const aiPlayer of aiPlayers) {
+          await voteOnWord.mutateAsync({
+            model: aiPlayer,
+            team: game.currentTurn === "red_turn" ? "red" : "blue",
+            word: proposedWord
+          });
+        }
+      }
     }
 
     timerRef.current = setInterval(() => {
       setTimer(prev => {
         if (prev <= 1) {
           clearInterval(timerRef.current);
+          setIsDiscussing(false);
           return 0;
         }
         return prev - 1;
@@ -208,8 +224,9 @@ export default function GamePage() {
             action: `AI gives clue: "${clue.word} (${clue.number})"`,
             result: "correct"
           }]);
-          startDiscussion(); //Start discussion before getting AI guess
-          await getAIGuess.mutateAsync(clue);
+
+          await startDiscussion();
+          // Note: The actual guess will be made after consensus is reached via the voteOnWord mutation
         }
       } catch (error) {
         console.error("Error in AI turn:", error);
@@ -255,6 +272,7 @@ export default function GamePage() {
       if (turnTimerRef.current) clearInterval(turnTimerRef.current);
     };
   }, [game?.id]);
+
 
 
   const formatTime = (seconds: number): string => {
