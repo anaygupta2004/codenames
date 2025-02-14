@@ -6,6 +6,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { createInitialGame } from "@/lib/game";
 import type { AIModel, PlayerType } from "@shared/schema";
 import { useState } from "react";
+import { useToast } from "@/hooks/use-toast";
 
 type TeamConfig = {
   spymaster: PlayerType;
@@ -14,6 +15,8 @@ type TeamConfig = {
 
 export default function Home() {
   const [_, navigate] = useLocation();
+  const { toast } = useToast();
+  const [isLoading, setIsLoading] = useState(false);
   const [redTeam, setRedTeam] = useState<TeamConfig>({
     spymaster: "gpt-4o",
     operatives: ["human", "claude-3-5-sonnet-20241022"]
@@ -24,13 +27,24 @@ export default function Home() {
   });
 
   const startGame = async () => {
-    const redTeamConfig = [redTeam.spymaster, ...redTeam.operatives];
-    const blueTeamConfig = [blueTeam.spymaster, ...blueTeam.operatives];
+    try {
+      setIsLoading(true);
+      const redTeamConfig = [redTeam.spymaster, ...redTeam.operatives];
+      const blueTeamConfig = [blueTeam.spymaster, ...blueTeam.operatives];
 
-    const gameData = createInitialGame(redTeamConfig, blueTeamConfig);
-    const res = await apiRequest("POST", "/api/games", gameData);
-    const game = await res.json();
-    navigate(`/game/${game.id}`);
+      const gameData = createInitialGame(redTeamConfig, blueTeamConfig);
+      const res = await apiRequest("POST", "/api/games", gameData);
+      const game = await res.json();
+      navigate(`/game/${game.id}`);
+    } catch (error) {
+      toast({
+        title: "Failed to start game",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const AIOptions = [
@@ -156,11 +170,12 @@ export default function Home() {
           </div>
 
           <Button
-            className="w-full"
+            className="w-full bg-green-600 hover:bg-green-700 text-white"
             size="lg"
             onClick={startGame}
+            disabled={isLoading}
           >
-            Start Game
+            {isLoading ? "Starting Game..." : "Start Game"}
           </Button>
         </CardContent>
       </Card>
