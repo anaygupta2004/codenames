@@ -155,7 +155,7 @@ export default function GamePage() {
   });
 
   const startDiscussion = async () => {
-    if (!game) return;
+    if (!game || !getAIClue.data) return;
 
     setIsDiscussing(true);
     setTimer(30);
@@ -163,29 +163,39 @@ export default function GamePage() {
     const currentTeam = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
     const aiPlayers = currentTeam.filter(player => player !== "human");
 
-    // Start team discussion
-    for (const aiPlayer of aiPlayers) {
-      await discussMove.mutateAsync({
-        model: aiPlayer,
-        team: game.currentTurn === "red_turn" ? "red" : "blue",
-        clue: getAIClue.data
-      });
-    }
+    try {
+      // Start team discussion
+      for (const aiPlayer of aiPlayers) {
+        await discussMove.mutateAsync({
+          model: aiPlayer,
+          team: game.currentTurn === "red_turn" ? "red" : "blue",
+          clue: {
+            word: getAIClue.data.word,
+            number: getAIClue.data.number
+          }
+        });
+      }
 
-    // After discussion, initiate voting
-    if (getAIClue.data) {
-      const proposedWord = getAIGuess.data?.guess;
-      if (proposedWord) {
+      // After discussion, get AI guess and initiate voting
+      const guessResult = await getAIGuess.mutateAsync(getAIClue.data);
+      if (guessResult?.guess) {
         for (const aiPlayer of aiPlayers) {
           await voteOnWord.mutateAsync({
             model: aiPlayer,
             team: game.currentTurn === "red_turn" ? "red" : "blue",
-            word: proposedWord
+            word: guessResult.guess
           });
         }
       }
+    } catch (error) {
+      console.error("Error in team discussion:", error);
+      setIsDiscussing(false);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
     }
 
+    // Start discussion timer
     timerRef.current = setInterval(() => {
       setTimer(prev => {
         if (prev <= 1) {

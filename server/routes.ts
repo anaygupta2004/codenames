@@ -138,26 +138,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!game) return res.status(404).json({ error: "Game not found" });
 
       const { model, team, clue } = req.body;
-      if (!model || !team || !clue) {
-        return res.status(400).json({ error: "Missing required parameters" });
+
+      // Validate required parameters
+      if (!model || !team) {
+        return res.status(400).json({ error: "Missing required parameters: model and team" });
+      }
+
+      if (!clue || typeof clue.word !== 'string' || typeof clue.number !== 'number') {
+        return res.status(400).json({ error: "Invalid clue format. Expected { word: string, number: number }" });
       }
 
       const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
-
       if (!currentTeamPlayers.includes(model)) {
         return res.status(400).json({ error: "AI model is not part of the team" });
       }
 
-      const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
-      const gameHistory = (game.gameHistory || []) as GameHistoryEntry[];
+      const teamDiscussion = game.teamDiscussion || [];
+      const gameHistory = game.gameHistory || [];
 
       const discussion = await discussAndVote(
         model as AIModel,
         team,
         game.words,
         clue,
-        teamDiscussion,
-        gameHistory,
+        teamDiscussion as TeamDiscussionEntry[],
+        gameHistory as GameHistoryEntry[],
         game.revealedCards
       );
 
