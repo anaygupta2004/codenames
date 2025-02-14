@@ -19,12 +19,9 @@ export default function GamePage() {
       const res = await apiRequest("POST", `/api/games/${id}/ai/clue`);
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-    },
     onError: (error) => {
       toast({
-        title: "Error",
+        title: "Error getting AI clue",
         description: error.message,
         variant: "destructive",
       });
@@ -43,7 +40,7 @@ export default function GamePage() {
     },
     onError: (error) => {
       toast({
-        title: "Error",
+        title: "Error making guess",
         description: error.message,
         variant: "destructive",
       });
@@ -55,79 +52,103 @@ export default function GamePage() {
   }
 
   const getCardColor = (word: string) => {
-    if (game.redTeam.includes(word)) return "bg-red-500";
-    if (game.blueTeam.includes(word)) return "bg-blue-500";
-    if (game.assassin === word) return "bg-gray-800";
-    return "bg-neutral-200";
+    if (game.revealedCards.includes(word)) {
+      if (game.redTeam.includes(word)) return "bg-red-500";
+      if (game.blueTeam.includes(word)) return "bg-blue-500";
+      if (game.assassin === word) return "bg-gray-800";
+      return "bg-neutral-200";
+    }
+    return "bg-white hover:bg-gray-50";
+  };
+
+  const getTextColor = (word: string) => {
+    return game.revealedCards.includes(word) ? "text-white" : "text-gray-900";
   };
 
   const currentTeam = game.currentTurn === "red_turn" ? "Red" : "Blue";
-  const isAITurn = (game.currentTurn === "red_turn" && game.redSpymaster) || 
-                   (game.currentTurn === "blue_turn" && game.blueSpymaster);
+  const isSpymasterAI = game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster;
 
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
-      {/* Game Status Header */}
-      <div className="mb-6 text-center">
-        <h1 className="text-2xl font-bold mb-2">Codenames AI</h1>
-        <div className="flex justify-center items-center gap-4">
-          <div className="text-red-500 font-bold">Red Score: {game.redScore}</div>
-          <div className={`px-4 py-2 rounded ${game.currentTurn === "red_turn" ? "bg-red-100" : "bg-blue-100"}`}>
-            Current Turn: {currentTeam} Team
+      {/* Game Header */}
+      <div className="mb-8 text-center">
+        <h1 className="text-3xl font-bold mb-4">Codenames AI</h1>
+
+        {/* Score and Turn Indicator */}
+        <div className="flex justify-center items-center gap-6 mb-4">
+          <div className="text-red-500 font-bold text-xl">Red: {game.redScore}</div>
+          <div className={`px-6 py-2 rounded-full font-semibold ${
+            game.currentTurn === "red_turn" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
+          }`}>
+            {currentTeam}'s Turn
           </div>
-          <div className="text-blue-500 font-bold">Blue Score: {game.blueScore}</div>
+          <div className="text-blue-500 font-bold text-xl">Blue: {game.blueScore}</div>
         </div>
-        {isAITurn && (
+
+        {/* AI Controls */}
+        {isSpymasterAI && (
           <div className="mt-4">
             <Button
-              className="bg-primary hover:bg-primary/90"
+              className="bg-primary hover:bg-primary/90 text-white px-8"
               size="lg"
               onClick={() => getAIClue.mutate()}
-              disabled={getAIClue.isPending}
+              disabled={getAIClue.isPending || game.gameState?.includes("win")}
             >
               {getAIClue.isPending ? "AI is thinking..." : "Get AI Clue"}
             </Button>
           </div>
         )}
+
+        {/* Show AI's clue if available */}
+        {getAIClue.data && (
+          <div className="mt-4 inline-block px-6 py-3 bg-primary/5 rounded-lg">
+            <span className="font-semibold mr-2">AI Clue:</span>
+            <span className="text-lg">
+              {getAIClue.data.word} ({getAIClue.data.number})
+            </span>
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Game Board */}
-        <div className="lg:col-span-4 grid grid-cols-5 gap-2">
-          {game.words.map((word) => (
-            <Card
-              key={word}
-              className={`${
-                game.revealedCards.includes(word)
-                  ? getCardColor(word)
-                  : "bg-white hover:bg-gray-50"
-              } cursor-pointer transition-colors`}
-              onClick={() => !game.revealedCards.includes(word) && makeGuess.mutate(word)}
-            >
-              <CardContent className="p-4 text-center">
-                <span className={game.revealedCards.includes(word) ? "text-white" : ""}>
-                  {word}
-                </span>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+      {/* Game Board */}
+      <div className="max-w-5xl mx-auto grid grid-cols-5 gap-3">
+        {game.words.map((word) => (
+          <Card
+            key={word}
+            className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105`}
+            onClick={() => {
+              if (!game.revealedCards.includes(word) && !game.gameState?.includes("win")) {
+                makeGuess.mutate(word);
+              }
+            }}
+          >
+            <CardContent className="p-4 text-center">
+              <span className={`font-medium ${getTextColor(word)}`}>
+                {word}
+              </span>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
 
-        {/* AI Status Panel */}
-        <div className="lg:col-span-1">
-          <Card>
-            <CardContent className="p-4">
-              <h2 className="text-xl font-bold mb-4">AI Status</h2>
-              {getAIClue.data && (
-                <div className="p-4 bg-primary/5 rounded-lg">
-                  <p className="font-semibold">AI Clue:</p>
-                  <p className="text-lg">{getAIClue.data.word} ({getAIClue.data.number})</p>
-                </div>
-              )}
+      {/* Game End State */}
+      {game.gameState?.includes("win") && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center">
+          <Card className="w-96">
+            <CardContent className="p-6 text-center">
+              <h2 className="text-2xl font-bold mb-4">
+                {game.gameState === "red_win" ? "Red Team Wins!" : "Blue Team Wins!"}
+              </h2>
+              <Button
+                className="w-full"
+                onClick={() => window.location.href = "/"}
+              >
+                Play Again
+              </Button>
             </CardContent>
           </Card>
         </div>
-      </div>
+      )}
     </div>
   );
 }
