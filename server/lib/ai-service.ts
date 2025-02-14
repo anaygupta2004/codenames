@@ -23,11 +23,15 @@ export async function discussAndVote(
   model: AIModel,
   team: "red" | "blue",
   words: string[],
-  clue: { word: string; number: number },
+  clue: { word: string; number: number } | undefined,
   teamDiscussion: TeamDiscussionEntry[],
   gameHistory: GameHistoryEntry[],
   revealedCards: string[],
 ): Promise<{ message: string; confidence: number }> {
+  if (!clue || !clue.word || typeof clue.number !== 'number') {
+    throw new Error("Invalid clue format provided to discussAndVote");
+  }
+
   const availableWords = words.filter(word => !revealedCards.includes(word));
 
   const recentDiscussion = teamDiscussion
@@ -249,9 +253,9 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
 }
 
 async function getXAIClue(prompt: string): Promise<{ word: string; number: number }> {
-  const openaiXAI = new OpenAI({ 
+  const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: process.env.XAI_API_KEY 
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
@@ -303,9 +307,9 @@ async function getAnthropicGuess(prompt: string): Promise<{ guess: string }> {
 }
 
 async function getXAIGuess(prompt: string): Promise<{ guess: string }> {
-  const openaiXAI = new OpenAI({ 
+  const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: process.env.XAI_API_KEY 
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
@@ -352,9 +356,9 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
 }
 
 async function getXAIDiscussion(prompt: string): Promise<{ message: string; confidence: number }> {
-  const openaiXAI = new OpenAI({ 
+  const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: process.env.XAI_API_KEY 
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
@@ -401,9 +405,9 @@ async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; re
 }
 
 async function getXAIVote(prompt: string): Promise<{ approved: boolean; reason: string }> {
-  const openaiXAI = new OpenAI({ 
+  const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: process.env.XAI_API_KEY 
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({

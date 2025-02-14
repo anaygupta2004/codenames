@@ -119,17 +119,26 @@ export default function GamePage() {
   });
 
   const discussMove = useMutation({
-    mutationFn: async (params: { model: string, team: "red" | "blue", clue: any }) => {
+    mutationFn: async (params: { model: string; team: "red" | "blue"; clue: any }) => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/discuss`, params);
-      return res.json();
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error in team discussion",
+        description: error.message,
+        variant: "destructive",
+      });
     }
   });
 
   const voteOnWord = useMutation({
-    mutationFn: async (params: { model: string, team: "red" | "blue", word: string }) => {
+    mutationFn: async (params: { model: string; team: "red" | "blue"; word: string }) => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/vote`, params);
       return res.json();
     },
@@ -158,7 +167,7 @@ export default function GamePage() {
       await discussMove.mutateAsync({
         model: aiPlayer,
         team: game.currentTurn === "red_turn" ? "red" : "blue",
-        clue: getAIClue.data
+        clue: getAIClue.data?.word // Added word property access
       });
     }
 

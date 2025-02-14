@@ -137,7 +137,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const game = await storage.getGame(Number(req.params.id));
       if (!game) return res.status(404).json({ error: "Game not found" });
 
-      const { model, team } = req.body;
+      const { model, team, clue } = req.body;
+      if (!model || !team || !clue) {
+        return res.status(400).json({ error: "Missing required parameters" });
+      }
+
       const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
 
       if (!currentTeamPlayers.includes(model)) {
@@ -148,10 +152,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const gameHistory = (game.gameHistory || []) as GameHistoryEntry[];
 
       const discussion = await discussAndVote(
-        model,
+        model as AIModel,
         team,
         game.words,
-        req.body.clue,
+        clue,
         teamDiscussion,
         gameHistory,
         game.revealedCards
