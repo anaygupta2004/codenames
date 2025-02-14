@@ -167,7 +167,7 @@ export default function GamePage() {
       await discussMove.mutateAsync({
         model: aiPlayer,
         team: game.currentTurn === "red_turn" ? "red" : "blue",
-        clue: getAIClue.data?.word // Added word property access
+        clue: getAIClue.data // Pass the entire clue object with word and number
       });
     }
 
