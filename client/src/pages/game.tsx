@@ -5,11 +5,12 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { type Game } from "@shared/schema";
 import { useParams } from "wouter";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 export default function GamePage() {
   const { id } = useParams();
   const { toast } = useToast();
+  const aiTurnInProgress = useRef(false);
 
   const { data: game, isLoading } = useQuery<Game>({
     queryKey: [`/api/games/${id}`],
@@ -57,6 +58,7 @@ export default function GamePage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+      aiTurnInProgress.current = false;
     },
     onError: (error) => {
       toast({
@@ -64,34 +66,34 @@ export default function GamePage() {
         description: error.message,
         variant: "destructive",
       });
+      aiTurnInProgress.current = false;
     },
   });
 
   // Handle AI turns
   useEffect(() => {
-    if (!game || game.gameState?.includes("win")) return;
+    if (!game || game.gameState?.includes("win") || aiTurnInProgress.current) return;
 
     const isRedTurn = game.currentTurn === "red_turn";
     const currentSpymasterIsAI = isRedTurn ? game.redSpymaster : game.blueSpymaster;
 
     const handleAITurn = async () => {
+      if (!currentSpymasterIsAI || aiTurnInProgress.current) return;
+
       try {
-        // Get AI clue if it's the spymaster's turn
-        if (currentSpymasterIsAI && !getAIClue.data) {
-          const clue = await getAIClue.mutateAsync();
-          // If we got a clue and the game is still going, make a guess
-          if (clue && !game.gameState?.includes("win")) {
-            await getAIGuess.mutateAsync(clue);
-          }
+        aiTurnInProgress.current = true;
+        const clue = await getAIClue.mutateAsync();
+        if (clue && !game.gameState?.includes("win")) {
+          await getAIGuess.mutateAsync(clue);
         }
       } catch (error) {
         console.error("Error in AI turn:", error);
+        aiTurnInProgress.current = false;
       }
     };
 
-    // Run AI turn logic
     handleAITurn();
-  }, [game, getAIClue.data, getAIGuess]);
+  }, [game?.currentTurn, game?.gameState]);
 
   if (isLoading || !game) {
     return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
@@ -131,20 +133,6 @@ export default function GamePage() {
           <div className="text-blue-500 font-bold text-xl">Blue: {game.blueScore}</div>
         </div>
 
-        {/* AI Controls */}
-        {isSpymasterAI && (
-          <div className="mt-4">
-            <Button
-              className="bg-primary hover:bg-primary/90 text-white px-8"
-              size="lg"
-              onClick={() => getAIClue.mutate()}
-              disabled={getAIClue.isPending || game.gameState?.includes("win")}
-            >
-              {getAIClue.isPending ? "AI is thinking..." : "Get AI Clue"}
-            </Button>
-          </div>
-        )}
-
         {/* Show AI's clue if available */}
         {getAIClue.data && (
           <div className="mt-4 inline-block px-6 py-3 bg-primary/5 rounded-lg">
@@ -163,7 +151,7 @@ export default function GamePage() {
             key={word}
             className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105`}
             onClick={() => {
-              if (!game.revealedCards.includes(word) && !game.gameState?.includes("win")) {
+              if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
                 makeGuess.mutate(word);
               }
             }}
