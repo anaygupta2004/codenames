@@ -61,48 +61,65 @@ export default function GamePage() {
     return "bg-neutral-200";
   };
 
+  const currentTeam = game.currentTurn === "red_turn" ? "Red" : "Blue";
+  const isAITurn = (game.currentTurn === "red_turn" && game.redSpymaster) || 
+                   (game.currentTurn === "blue_turn" && game.blueSpymaster);
+
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="space-y-4">
-          <div className="grid grid-cols-5 gap-2">
-            {game.words.map((word) => (
-              <Card
-                key={word}
-                className={`${
-                  game.revealedCards.includes(word)
-                    ? getCardColor(word)
-                    : "bg-white hover:bg-gray-50"
-                } cursor-pointer transition-colors`}
-                onClick={() => !game.revealedCards.includes(word) && makeGuess.mutate(word)}
-              >
-                <CardContent className="p-4 text-center">
-                  <span className={game.revealedCards.includes(word) ? "text-white" : ""}>
-                    {word}
-                  </span>
-                </CardContent>
-              </Card>
-            ))}
+      {/* Game Status Header */}
+      <div className="mb-6 text-center">
+        <h1 className="text-2xl font-bold mb-2">Codenames AI</h1>
+        <div className="flex justify-center items-center gap-4">
+          <div className="text-red-500 font-bold">Red Score: {game.redScore}</div>
+          <div className={`px-4 py-2 rounded ${game.currentTurn === "red_turn" ? "bg-red-100" : "bg-blue-100"}`}>
+            Current Turn: {currentTeam} Team
           </div>
-          <div className="flex justify-between">
-            <div className="text-red-500 font-bold">Red Score: {game.redScore}</div>
-            <div className="text-blue-500 font-bold">Blue Score: {game.blueScore}</div>
-          </div>
+          <div className="text-blue-500 font-bold">Blue Score: {game.blueScore}</div>
         </div>
-        <div className="space-y-4">
+        {isAITurn && (
+          <div className="mt-4">
+            <Button
+              className="bg-primary hover:bg-primary/90"
+              size="lg"
+              onClick={() => getAIClue.mutate()}
+              disabled={getAIClue.isPending}
+            >
+              {getAIClue.isPending ? "AI is thinking..." : "Get AI Clue"}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        {/* Game Board */}
+        <div className="lg:col-span-4 grid grid-cols-5 gap-2">
+          {game.words.map((word) => (
+            <Card
+              key={word}
+              className={`${
+                game.revealedCards.includes(word)
+                  ? getCardColor(word)
+                  : "bg-white hover:bg-gray-50"
+              } cursor-pointer transition-colors`}
+              onClick={() => !game.revealedCards.includes(word) && makeGuess.mutate(word)}
+            >
+              <CardContent className="p-4 text-center">
+                <span className={game.revealedCards.includes(word) ? "text-white" : ""}>
+                  {word}
+                </span>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        {/* AI Status Panel */}
+        <div className="lg:col-span-1">
           <Card>
             <CardContent className="p-4">
-              <h2 className="text-xl font-bold mb-4">Game Status</h2>
-              <p className="mb-4">Current Turn: {game.currentTurn === "red_turn" ? "Red Team" : "Blue Team"}</p>
-              <Button
-                className="w-full mb-4"
-                onClick={() => getAIClue.mutate()}
-                disabled={getAIClue.isPending}
-              >
-                {getAIClue.isPending ? "Thinking..." : "Get AI Clue"}
-              </Button>
+              <h2 className="text-xl font-bold mb-4">AI Status</h2>
               {getAIClue.data && (
-                <div className="mt-4 p-4 bg-primary/5 rounded-lg">
+                <div className="p-4 bg-primary/5 rounded-lg">
                   <p className="font-semibold">AI Clue:</p>
                   <p className="text-lg">{getAIClue.data.word} ({getAIClue.data.number})</p>
                 </div>
