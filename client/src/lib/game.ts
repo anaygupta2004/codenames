@@ -1,4 +1,4 @@
-import { type Game, type CardType, type AIModel } from "@shared/schema";
+import { type Game, type CardType, type AIModel, type PlayerType } from "@shared/schema";
 
 export function generateGameWords(): string[] {
   const words = [
@@ -10,10 +10,8 @@ export function generateGameWords(): string[] {
 }
 
 export function createInitialGame(
-  redSpymasterAI: boolean, 
-  blueSpymasterAI: boolean,
-  redAIModel: AIModel = "gpt-4o",
-  blueAIModel: AIModel = "claude-3-5-sonnet-20241022"
+  redTeamConfig: PlayerType[],
+  blueTeamConfig: PlayerType[],
 ): Omit<Game, "id"> {
   const words = generateGameWords();
   const assignments = assignCards();
@@ -28,11 +26,12 @@ export function createInitialGame(
     redScore: 0,
     blueScore: 0,
     gameState: "red_turn",
-    redSpymaster: redSpymasterAI,
-    blueSpymaster: blueSpymasterAI,
-    redAIModel,
-    blueAIModel,
+    redSpymaster: redTeamConfig[0] !== "human",
+    blueSpymaster: blueTeamConfig[0] !== "human",
+    redPlayers: redTeamConfig,
+    bluePlayers: blueTeamConfig,
     revealedCards: [],
+    gameHistory: [],
   };
 }
 

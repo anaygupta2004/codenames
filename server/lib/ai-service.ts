@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { type CardType } from "@shared/schema";
+import { type CardType, type GameHistoryEntry } from "@shared/schema";
 
 // the newest OpenAI model is "gpt-4o" which was released May 13, 2024
 // the newest Anthropic model is "claude-3-5-sonnet-20241022" which was released October 22, 2024
@@ -15,22 +15,38 @@ export async function getSpymasterClue(
   words: string[],
   teamWords: string[],
   opposingWords: string[],
-  assassinWord: string
+  assassinWord: string,
+  gameHistory: GameHistoryEntry[]
 ): Promise<{ word: string; number: number }> {
+  const previousClues = gameHistory
+    .filter(entry => entry.type === "clue")
+    .map(entry => entry.content)
+    .join(", ");
+
+  const previousGuesses = gameHistory
+    .filter(entry => entry.type === "guess")
+    .map(entry => `${entry.content} (${entry.result})`)
+    .join(", ");
+
   const prompt = `As a Codenames spymaster, analyze these game elements:
 Board words: ${words.join(", ")}
 My team's words: ${teamWords.join(", ")}
 Opposing team's words: ${opposingWords.join(", ")}
 Assassin word: ${assassinWord}
 
+Game History:
+Previous clues given: ${previousClues || "None"}
+Previous guesses made: ${previousGuesses || "None"}
+
 Give a one-word clue and a number indicating how many words it relates to.
+Consider previous clues and guesses to avoid repetition and learn from mistakes.
+Respond in JSON format: { "word": "clue", "number": count }
 The clue must follow Codenames rules:
 - Must be a single word
 - Cannot be any form of the visible words
 - Should connect multiple team words if possible
-- Avoid leading to opponent or assassin words
-
-Respond in JSON format: { "word": "clue", "number": count }`;
+- Avoid words that might lead to opponent or assassin words
+- Avoid words similar to previously failed clues`;
 
   switch (getAIService(model)) {
     case "openai":
@@ -48,16 +64,32 @@ export async function getGuesserMove(
   model: AIModel,
   words: string[],
   clue: { word: string; number: number },
-  revealedCards: string[]
+  revealedCards: string[],
+  gameHistory: GameHistoryEntry[]
 ): Promise<string> {
   const availableWords = words.filter(word => !revealedCards.includes(word));
 
+  const previousCluesAndResults = gameHistory
+    .filter(entry => entry.type === "clue" || entry.type === "guess")
+    .map(entry => {
+      if (entry.type === "clue") return `Clue: ${entry.content}`;
+      return `Guess: ${entry.content} (${entry.result})`;
+    })
+    .join("\n");
+
   const prompt = `As a Codenames guesser, analyze:
 Available words: ${availableWords.join(", ")}
-Clue word: ${clue.word}
-Clue number: ${clue.number}
+Current clue word: ${clue.word}
+Current clue number: ${clue.number}
 
-Choose the word that best matches the clue.
+Game History:
+${previousCluesAndResults}
+
+Choose the word that best matches the clue, considering:
+1. Previous successful and failed guesses
+2. Pattern of clues given
+3. Words that remain unrevealed
+
 Respond in JSON format: { "guess": "chosen_word" }`;
 
   switch (getAIService(model)) {
@@ -108,7 +140,7 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
 
   const content = response.content[0].text;
   const result = JSON.parse(content) as { word: string; number: number };
-  
+
   if (!result.word || typeof result.number !== 'number') {
     throw new Error("Invalid response format from Anthropic");
   }
