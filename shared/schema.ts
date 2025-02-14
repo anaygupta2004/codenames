@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -16,14 +16,18 @@ export const games = pgTable("games", {
   // AI player assignments
   redSpymaster: boolean("red_spymaster_is_ai").notNull(),
   blueSpymaster: boolean("blue_spymaster_is_ai").notNull(),
-  redPlayers: text("red_players").array().notNull(), // ["human", "gpt-4o", "claude-3-5-sonnet-20241022"]
-  bluePlayers: text("blue_players").array().notNull(), // ["human", "gpt-4o", "grok-2-1212"]
+  redPlayers: text("red_players").array().notNull(),
+  bluePlayers: text("blue_players").array().notNull(),
   revealedCards: text("revealed_cards").array().notNull().default([]),
+  // Game time limits
+  startTime: timestamp("start_time").notNull(),
+  gameDuration: integer("game_duration").notNull().default(1800), // 30 minutes in seconds
+  turnTimeLimit: integer("turn_time_limit").notNull().default(180), // 3 minutes per turn
+  currentTurnStartTime: timestamp("current_turn_start_time").notNull(),
   // Game history for AI context
-  gameHistory: text("game_history").array().notNull().default([]), // [{turn: "red", type: "clue", content: "nature 3"}, {turn: "red", type: "guess", content: "TREE", result: "correct"}]
-  // AI team discussion
-  teamDiscussion: text("team_discussion").array().notNull().default([]), // [{team: "red", player: "gpt-4o", message: "I think TREE fits the clue because...", confidence: 0.8}]
-  consensusVotes: text("consensus_votes").array().notNull().default([]), // [{team: "red", player: "gpt-4o", word: "TREE", approved: true}]
+  gameHistory: text("game_history").array().notNull().default([]),
+  teamDiscussion: text("team_discussion").array().notNull().default([]),
+  consensusVotes: text("consensus_votes").array().notNull().default([]),
 });
 
 export const insertGameSchema = createInsertSchema(games).omit({
@@ -34,13 +38,15 @@ export const insertGameSchema = createInsertSchema(games).omit({
   gameHistory: true,
   teamDiscussion: true,
   consensusVotes: true,
+  startTime: true,
+  currentTurnStartTime: true,
 });
 
 export type InsertGame = z.infer<typeof insertGameSchema>;
 export type Game = typeof games.$inferSelect;
 
 export type CardType = "red" | "blue" | "neutral" | "assassin";
-export type GameState = "red_turn" | "blue_turn" | "red_win" | "blue_win";
+export type GameState = "red_turn" | "blue_turn" | "red_win" | "blue_win" | "time_up";
 export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | "llama-7b" | "gemini-pro";
 export type PlayerType = "human" | AIModel;
 

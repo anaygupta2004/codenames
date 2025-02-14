@@ -8,7 +8,9 @@ import { useParams } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertCircle, CheckCircle2, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, XCircle, Clock, Timer } from "lucide-react";
+import { storage } from "@/lib/storage";
+
 
 export default function GamePage() {
   const { id } = useParams();
@@ -24,6 +26,10 @@ export default function GamePage() {
   const [timer, setTimer] = useState<number>(30);
   const [isDiscussing, setIsDiscussing] = useState(false);
   const timerRef = useRef<NodeJS.Timeout>();
+  const [gameTimeLeft, setGameTimeLeft] = useState<number>(1800); // 30 minutes
+  const [turnTimeLeft, setTurnTimeLeft] = useState<number>(180); // 3 minutes
+  const gameTimerRef = useRef<NodeJS.Timeout>();
+  const turnTimerRef = useRef<NodeJS.Timeout>();
 
   const { data: game, isLoading } = useQuery<Game>({
     queryKey: [`/api/games/${id}`],
@@ -197,6 +203,49 @@ export default function GamePage() {
     handleAITurn();
   }, [game?.currentTurn, game?.gameState]);
 
+  useEffect(() => {
+    if (!game) return;
+
+    // Start game timer
+    gameTimerRef.current = setInterval(() => {
+      setGameTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(gameTimerRef.current);
+          // End game when time runs out
+          storage.updateGame(game.id, { gameState: "time_up" });
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Start turn timer
+    turnTimerRef.current = setInterval(() => {
+      setTurnTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(turnTimerRef.current);
+          // Switch turns when time runs out
+          const nextTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+          storage.updateGame(game.id, { currentTurn: nextTurn });
+          return 180; // Reset to 3 minutes
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (gameTimerRef.current) clearInterval(gameTimerRef.current);
+      if (turnTimerRef.current) clearInterval(turnTimerRef.current);
+    };
+  }, [game?.id]);
+
+
+  const formatTime = (seconds: number): string => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  };
+
   if (isLoading || !game) {
     return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
   }
@@ -235,7 +284,7 @@ export default function GamePage() {
     if (!game) return null;
 
     const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-    const recentDiscussion = game.teamDiscussion
+    const recentDiscussion = (game.teamDiscussion as TeamDiscussionEntry[])
       .filter(entry => entry.team === currentTeam)
       .sort((a, b) => b.timestamp - a.timestamp);
 
@@ -285,11 +334,23 @@ export default function GamePage() {
     );
   };
 
-
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
       <div className="mb-8 text-center">
         <h1 className="text-3xl font-bold mb-4">Codenames AI</h1>
+
+        {/* Time indicators */}
+        <div className="flex justify-center items-center gap-6 mb-4">
+          <div className="flex items-center gap-2">
+            <Clock className="h-5 w-5 text-gray-600" />
+            <span className="font-mono">{formatTime(gameTimeLeft)}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Timer className="h-5 w-5 text-gray-600" />
+            <span className="font-mono">{formatTime(turnTimeLeft)}</span>
+          </div>
+        </div>
+
         <div className="flex justify-center items-center gap-6 mb-4">
           <div className="text-red-500 font-bold text-xl">Red: {game.redScore}</div>
           <div className={`px-6 py-2 rounded-full font-semibold ${

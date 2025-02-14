@@ -64,10 +64,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!game) return res.status(404).json({ message: "Game not found" });
 
     const clue = await getSpymasterClue(
+      game.currentTurn === "red_turn" ? "gpt-4o" : "claude-3-5-sonnet-20241022",
       game.words,
       game.currentTurn === "red_turn" ? game.redTeam : game.blueTeam,
       game.currentTurn === "red_turn" ? game.blueTeam : game.redTeam,
-      game.assassin
+      game.assassin,
+      game.gameHistory
     );
 
     res.json(clue);
@@ -78,9 +80,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!game) return res.status(404).json({ message: "Game not found" });
 
     const guess = await getGuesserMove(
+      game.currentTurn === "red_turn" ? "gpt-4o" : "claude-3-5-sonnet-20241022",
       game.words,
       req.body.clue,
-      game.revealedCards
+      game.revealedCards,
+      game.gameHistory
     );
 
     res.json({ guess });

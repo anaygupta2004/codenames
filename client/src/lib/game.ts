@@ -32,6 +32,12 @@ export function createInitialGame(
     bluePlayers: blueTeamConfig,
     revealedCards: [],
     gameHistory: [],
+    teamDiscussion: [],
+    consensusVotes: [],
+    startTime: new Date(),
+    gameDuration: 1800, // 30 minutes
+    turnTimeLimit: 180, // 3 minutes
+    currentTurnStartTime: new Date()
   };
 }
 
