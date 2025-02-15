@@ -8,21 +8,33 @@ import { useParams } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertCircle, CheckCircle2, XCircle, Clock, Timer } from "lucide-react";
+import { AlertCircle, CheckCircle2, XCircle, Clock, Timer, Bot } from "lucide-react";
+import { SiOpenai, SiAnthropic } from "react-icons/si";
 import { storage } from "@/lib/storage";
 
+// Update AI model display info with correct icon components
+const AI_MODEL_INFO = {
+  "gpt-4o": { name: "GPT-4", Icon: SiOpenai },
+  "claude-3-5-sonnet-20241022": { name: "Claude", Icon: SiAnthropic },
+  "grok-2-1212": { name: "Grok", Icon: Bot }
+};
+
+// Rest of the file remains unchanged until the gameLog type
+
+type GameLogEntry = {
+  team: string;
+  action: string;
+  result: "correct" | "wrong" | "assassin";
+  word?: string;
+  player?: string;
+};
 
 export default function GamePage() {
   const { id } = useParams();
   const { toast } = useToast();
   const aiTurnInProgress = useRef(false);
   const [isSpymasterView, setIsSpymasterView] = useState(false);
-  const [gameLog, setGameLog] = useState<Array<{
-    team: string;
-    action: string;
-    result: "correct" | "wrong" | "assassin";
-    word?: string;
-  }>>([]);
+  const [gameLog, setGameLog] = useState<GameLogEntry[]>([]);
   const [timer, setTimer] = useState<number>(30);
   const [isDiscussing, setIsDiscussing] = useState(false);
   const timerRef = useRef<NodeJS.Timeout>();
@@ -164,7 +176,6 @@ export default function GamePage() {
     const aiPlayers = currentTeam.filter(player => player !== "human");
 
     try {
-      // Start discussion timer
       timerRef.current = setInterval(() => {
         setTimer(prev => {
           if (prev <= 1) {
@@ -176,12 +187,10 @@ export default function GamePage() {
         });
       }, 1000);
 
-      // Sequential team discussion with random delays
       for (const aiPlayer of aiPlayers) {
-        // Random delay between AI responses (1-3 seconds)
         await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
 
-        if (!isDiscussing) break; // Stop if discussion time is up
+        if (!isDiscussing) break;
 
         await discussMove.mutateAsync({
           model: aiPlayer,
@@ -193,7 +202,6 @@ export default function GamePage() {
         });
       }
 
-      // Only proceed with voting if discussion is still active
       if (isDiscussing) {
         const guessResult = await getAIGuess.mutateAsync(getAIClue.data);
         if (guessResult?.guess) {
@@ -225,11 +233,19 @@ export default function GamePage() {
     };
   }, []);
 
+  const getModelInfo = (model: string) => {
+    return AI_MODEL_INFO[model as keyof typeof AI_MODEL_INFO] || { 
+      name: model, 
+      Icon: AlertCircle 
+    };
+  };
+
   useEffect(() => {
     if (!game || game.gameState?.includes("win") || aiTurnInProgress.current || isDiscussing) return;
 
     const isRedTurn = game.currentTurn === "red_turn";
     const currentSpymasterIsAI = isRedTurn ? game.redSpymaster : game.blueSpymaster;
+    const currentTeamPlayers = isRedTurn ? game.redPlayers : game.bluePlayers;
 
     const handleAITurn = async () => {
       if (!currentSpymasterIsAI || aiTurnInProgress.current) return;
@@ -238,14 +254,16 @@ export default function GamePage() {
         aiTurnInProgress.current = true;
         const clue = await getAIClue.mutateAsync();
         if (clue && !game.gameState?.includes("win")) {
+          const { name } = getModelInfo(currentSpymasterIsAI as string);
           setGameLog(prev => [...prev, {
             team: isRedTurn ? "red" : "blue",
-            action: `AI gives clue: "${clue.word} (${clue.number})"`,
-            result: "correct"
+            action: `${name} gives clue: "${clue.word} (${clue.number})"`,
+            result: "correct",
+            player: currentSpymasterIsAI 
           }]);
 
+          // Automatically start discussion after clue is given
           await startDiscussion();
-          // Note: The actual guess will be made after consensus is reached via the voteOnWord mutation
         }
       } catch (error) {
         console.error("Error in AI turn:", error);
@@ -259,12 +277,10 @@ export default function GamePage() {
   useEffect(() => {
     if (!game) return;
 
-    // Start game timer
     gameTimerRef.current = setInterval(() => {
       setGameTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(gameTimerRef.current);
-          // End game when time runs out
           storage.updateGame(game.id, { gameState: "time_up" });
           return 0;
         }
@@ -272,15 +288,13 @@ export default function GamePage() {
       });
     }, 1000);
 
-    // Start turn timer
     turnTimerRef.current = setInterval(() => {
       setTurnTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(turnTimerRef.current);
-          // Switch turns when time runs out
           const nextTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
           storage.updateGame(game.id, { currentTurn: nextTurn });
-          return 180; // Reset to 3 minutes
+          return 180; 
         }
         return prev - 1;
       });
@@ -291,7 +305,6 @@ export default function GamePage() {
       if (turnTimerRef.current) clearInterval(turnTimerRef.current);
     };
   }, [game?.id]);
-
 
 
   const formatTime = (seconds: number): string => {
@@ -327,8 +340,8 @@ export default function GamePage() {
 
   const getLogEmoji = (result: "correct" | "wrong" | "assassin") => {
     switch (result) {
-      case "correct": return "✅";
-      case "wrong": return "❌";
+      case "correct": return <CheckCircle2 className="inline w-4 h-4 text-green-500" />;
+      case "wrong": return <XCircle className="inline w-4 h-4 text-red-500" />;
       case "assassin": return "💀";
       default: return "";
     }
@@ -347,7 +360,7 @@ export default function GamePage() {
       <Card className="mt-4">
         <CardContent className="p-4">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="font-bold text-lg">AI Team Discussion</h3>
+            <h3 className="font-bold text-lg">Team Discussion</h3>
             {isDiscussing && (
               <div className="text-sm font-medium">
                 Time remaining: {timer}s
@@ -355,33 +368,30 @@ export default function GamePage() {
             )}
           </div>
 
-          {!isDiscussing && game.currentTurn && !game.gameState?.includes("win") && (
-            <Button
-              onClick={startDiscussion}
-              className="w-full mb-4"
-            >
-              Start Team Discussion
-            </Button>
-          )}
-
           <ScrollArea className="h-[200px]">
             <div className="space-y-2">
-              {recentDiscussion.map((entry, index) => (
-                <div
-                  key={index}
-                  className={`p-3 rounded-lg ${
-                    entry.team === "red" ? "bg-red-50" : "bg-blue-50"
-                  }`}
-                >
-                  <div className="flex justify-between mb-1">
-                    <span className="font-medium">{entry.player}</span>
-                    <span className="text-sm text-gray-500">
-                      Confidence: {Math.round(entry.confidence * 100)}%
-                    </span>
+              {recentDiscussion.map((entry, index) => {
+                const { Icon, name } = getModelInfo(entry.player);
+                return (
+                  <div
+                    key={index}
+                    className={`p-3 rounded-lg ${
+                      entry.team === "red" ? "bg-red-50" : "bg-blue-50"
+                    }`}
+                  >
+                    <div className="flex justify-between items-center mb-1">
+                      <div className="flex items-center gap-2">
+                        <Icon className="w-4 h-4" />
+                        <span className="font-medium">{name}</span>
+                      </div>
+                      <span className="text-sm text-gray-500">
+                        Confidence: {Math.round(entry.confidence * 100)}%
+                      </span>
+                    </div>
+                    <p className="text-sm">{entry.message}</p>
                   </div>
-                  <p className="text-sm">{entry.message}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </ScrollArea>
         </CardContent>
@@ -394,7 +404,6 @@ export default function GamePage() {
       <div className="mb-8 text-center">
         <h1 className="text-3xl font-bold mb-4">Codenames AI</h1>
 
-        {/* Time indicators */}
         <div className="flex justify-center items-center gap-6 mb-4">
           <div className="flex items-center gap-2">
             <Clock className="h-5 w-5 text-gray-600" />
@@ -452,18 +461,26 @@ export default function GamePage() {
               <h3 className="font-bold text-lg mb-4">Game Log</h3>
               <ScrollArea className="h-[200px]">
                 <div className="space-y-2">
-                  {gameLog.map((log, index) => (
-                    <div
-                      key={index}
-                      className={`p-2 rounded text-sm ${
-                        log.team === "red" ? "bg-red-50" : "bg-blue-50"
-                      }`}
-                    >
-                      <span className="font-medium capitalize">{log.team}</span>
-                       {log.action}
-                       {getLogEmoji(log.result)}
-                    </div>
-                  ))}
+                  {gameLog.map((log, index) => {
+                    const { Icon, name } = log.player ? getModelInfo(log.player) : { Icon: null, name: "" };
+                    return (
+                      <div
+                        key={index}
+                        className={`p-2 rounded text-sm ${
+                          log.team === "red" ? "bg-red-50" : "bg-blue-50"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          {Icon && <Icon className="w-4 h-4" />}
+                          <span className="font-medium capitalize">
+                            {name || log.team}
+                          </span>
+                          {log.action}
+                          {getLogEmoji(log.result)}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </ScrollArea>
             </CardContent>

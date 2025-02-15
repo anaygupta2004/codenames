@@ -36,7 +36,14 @@ export async function discussAndVote(
 
   const recentDiscussion = teamDiscussion
     .filter(entry => entry.team === team)
-    .map(entry => `${entry.player}: ${entry.message} (confidence: ${entry.confidence})`)
+    .sort((a, b) => a.timestamp - b.timestamp) // Ensure chronological order
+    .map(entry => {
+      const aiService = getAIService(entry.player as AIModel);
+      const modelName = entry.player === "gpt-4o" ? "GPT-4" :
+                       entry.player === "claude-3-5-sonnet-20241022" ? "Claude" :
+                       entry.player === "grok-2-1212" ? "Grok" : entry.player;
+      return `${modelName} (${aiService}): ${entry.message} (confidence: ${entry.confidence})`;
+    })
     .join("\n");
 
   const previousCluesAndResults = gameHistory
@@ -58,6 +65,7 @@ ${recentDiscussion}
 Game History:
 ${previousCluesAndResults}
 
+As ${model === "gpt-4o" ? "GPT-4" : model === "claude-3-5-sonnet-20241022" ? "Claude" : "Grok"}, provide your perspective:
 1. Analyze the other team members' suggestions
 2. Consider their confidence levels
 3. State your opinion about the best word choice

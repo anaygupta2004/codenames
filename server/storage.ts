@@ -24,9 +24,9 @@ export class MemStorage implements IStorage {
       redScore: 0,
       blueScore: 0,
       revealedCards: [],
-      gameHistory: [] as GameHistoryEntry[],
-      teamDiscussion: [] as TeamDiscussionEntry[],
-      consensusVotes: [] as ConsensusVote[],
+      gameHistory: [],
+      teamDiscussion: [],
+      consensusVotes: [],
       startTime: now,
       currentTurnStartTime: now,
       gameDuration: insertGame.gameDuration || 1800,
@@ -42,15 +42,21 @@ export class MemStorage implements IStorage {
 
     return {
       ...game,
-      teamDiscussion: game.teamDiscussion.map(entry => 
-        typeof entry === 'string' ? JSON.parse(entry) as TeamDiscussionEntry : entry
-      ),
-      gameHistory: game.gameHistory.map(entry =>
-        typeof entry === 'string' ? JSON.parse(entry) as GameHistoryEntry : entry
-      ),
-      consensusVotes: game.consensusVotes.map(entry =>
-        typeof entry === 'string' ? JSON.parse(entry) as ConsensusVote : entry
-      ),
+      teamDiscussion: Array.isArray(game.teamDiscussion) 
+        ? game.teamDiscussion.map(entry => 
+            typeof entry === 'string' ? JSON.parse(entry) as TeamDiscussionEntry : entry
+          )
+        : [],
+      gameHistory: Array.isArray(game.gameHistory)
+        ? game.gameHistory.map(entry =>
+            typeof entry === 'string' ? JSON.parse(entry) as GameHistoryEntry : entry
+          )
+        : [],
+      consensusVotes: Array.isArray(game.consensusVotes)
+        ? game.consensusVotes.map(entry =>
+            typeof entry === 'string' ? JSON.parse(entry) as ConsensusVote : entry
+          )
+        : []
     };
   }
 
@@ -63,7 +69,7 @@ export class MemStorage implements IStorage {
       ...updates,
       teamDiscussion: updates.teamDiscussion || game.teamDiscussion,
       gameHistory: updates.gameHistory || game.gameHistory,
-      consensusVotes: updates.consensusVotes || game.consensusVotes,
+      consensusVotes: updates.consensusVotes || game.consensusVotes
     };
 
     this.games.set(id, updatedGame);
