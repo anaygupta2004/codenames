@@ -34,7 +34,7 @@ export default function GamePage() {
   const aiTurnInProgress = useRef(false);
   const [isSpymasterView, setIsSpymasterView] = useState(false);
   const [gameLog, setGameLog] = useState<GameLogEntry[]>([]);
-  const [timer, setTimer] = useState<number>(60); // Changed from 30 to 60 seconds
+  const [timer, setTimer] = useState<number>(60);
   const [isDiscussing, setIsDiscussing] = useState(false);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.8);
   const [votingInProgress, setVotingInProgress] = useState(false);
@@ -117,7 +117,7 @@ export default function GamePage() {
         result = "assassin";
       }
 
-      const currentPlayer = game.currentTurn === "red_turn" ? 
+      const currentPlayer = game.currentTurn === "red_turn" ?
         game.redSpymaster : game.blueSpymaster;
 
       setGameLog(prev => [...prev, {
@@ -246,7 +246,7 @@ export default function GamePage() {
       try {
         setVotingInProgress(true);
         const currentPlayers = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
-        const aiPlayers = currentPlayers.filter(player => 
+        const aiPlayers = currentPlayers.filter(player =>
           typeof player === 'string' && player !== 'human'
         ) as string[];
 
@@ -309,8 +309,8 @@ export default function GamePage() {
       <Card className={`mt-4 border-${teamColor}-500 border-2`}>
         <CardContent className="p-4">
           <div className="flex justify-between items-center mb-4">
-            <h3 className={`font-bold text-lg text-${teamColor}-700`}>
-              {currentTeam === "red" ? "Red" : "Blue"} Team Discussion
+            <h3 className="font-bold text-lg">
+              Team Discussion
             </h3>
             {isDiscussing && (
               <div className="flex items-center gap-2">
@@ -411,9 +411,7 @@ export default function GamePage() {
 
 
   const [gameTimeLeft, setGameTimeLeft] = useState<number>(1800); // 30 minutes
-  const [turnTimeLeft, setTurnTimeLeft] = useState<number>(180); // 3 minutes
   const gameTimerRef = useRef<NodeJS.Timeout>();
-  const turnTimerRef = useRef<NodeJS.Timeout>();
 
   useEffect(() => {
     if (!game) return;
@@ -429,21 +427,9 @@ export default function GamePage() {
       });
     }, 1000);
 
-    turnTimerRef.current = setInterval(() => {
-      setTurnTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(turnTimerRef.current);
-          const nextTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
-          storage.updateGame(game.id, { currentTurn: nextTurn });
-          return 180;
-        }
-        return prev - 1;
-      });
-    }, 1000);
 
     return () => {
       if (gameTimerRef.current) clearInterval(gameTimerRef.current);
-      if (turnTimerRef.current) clearInterval(turnTimerRef.current);
     };
   }, [game?.id]);
 
@@ -528,25 +514,15 @@ export default function GamePage() {
         <h1 className="text-3xl font-bold mb-4">Codenames AI</h1>
 
         <div className="flex justify-center items-center gap-6 mb-4">
-          <div className="flex items-center gap-2">
-            <Clock className="h-5 w-5 text-gray-600" />
-            <span className="font-mono">{formatTime(gameTimeLeft)}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Timer className="h-5 w-5 text-gray-600" />
-            <span className="font-mono">{formatTime(turnTimeLeft)}</span>
-          </div>
-        </div>
-
-        <div className="flex justify-center items-center gap-6 mb-4">
           <div className="text-red-500 font-bold text-xl">Red: {game.redScore}</div>
           <div className={`px-6 py-2 rounded-full font-semibold ${
             game.currentTurn === "red_turn" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
           }`}>
-            {currentTeam}'s Turn {isDiscussing && `(Discussing: ${timer}s)`}
+            {currentTeam}'s Turn {isDiscussing && `(Discussion: ${timer}s)`}
           </div>
           <div className="text-blue-500 font-bold text-xl">Blue: {game.blueScore}</div>
         </div>
+
         <div className="flex items-center justify-center gap-2 mb-4">
           <Switch
             checked={isSpymasterView}

@@ -52,18 +52,36 @@ const AIOptions = [
   }
 ];
 
+// Function to auto-assign roles
+const autoAssignRoles = (players: PlayerType[]): TeamConfig => {
+  const aiPlayers = players.filter(p => p !== "human");
+  const humans = players.filter(p => p === "human");
+
+  // If no AI players, return all humans
+  if (aiPlayers.length === 0) {
+    return {
+      spymaster: "human",
+      operatives: humans
+    };
+  }
+
+  // Select first AI as spymaster, rest as operatives
+  return {
+    spymaster: aiPlayers[0],
+    operatives: [...aiPlayers.slice(1), ...humans]
+  };
+};
+
 export default function Home() {
   const [_, navigate] = useLocation();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  const [redTeam, setRedTeam] = useState<TeamConfig>({
-    spymaster: "gpt-4o",
-    operatives: ["human", "claude-3-5-sonnet-20241022"]
-  });
-  const [blueTeam, setBlueTeam] = useState<TeamConfig>({
-    spymaster: "claude-3-5-sonnet-20241022",
-    operatives: ["human", "grok-2-1212"]
-  });
+  const [redTeam, setRedTeam] = useState<TeamConfig>(() => 
+    autoAssignRoles(["gpt-4o", "human", "claude-3-5-sonnet-20241022"])
+  );
+  const [blueTeam, setBlueTeam] = useState<TeamConfig>(() => 
+    autoAssignRoles(["claude-3-5-sonnet-20241022", "human", "grok-2-1212"])
+  );
 
   const startGame = async () => {
     try {
@@ -86,6 +104,18 @@ export default function Home() {
     }
   };
 
+  const updateTeamConfig = (
+    team: "red" | "blue",
+    players: PlayerType[]
+  ) => {
+    const newConfig = autoAssignRoles(players);
+    if (team === "red") {
+      setRedTeam(newConfig);
+    } else {
+      setBlueTeam(newConfig);
+    }
+  };
+
   const renderPlayerSelect = (
     team: "red" | "blue",
     role: "spymaster" | "operative",
@@ -103,7 +133,20 @@ export default function Home() {
         </label>
         <Select
           value={actualValue}
-          onValueChange={(val) => onChange?.(val as PlayerType)}
+          onValueChange={(val) => {
+            if (onChange) {
+              onChange(val as PlayerType);
+              // Automatically reassign roles when a player changes
+              const teamConfig = team === "red" ? redTeam : blueTeam;
+              const allPlayers = role === "spymaster" 
+                ? [val as PlayerType, ...teamConfig.operatives]
+                : [...teamConfig.operatives];
+              if (index !== undefined) {
+                allPlayers[index] = val as PlayerType;
+              }
+              updateTeamConfig(team, allPlayers);
+            }
+          }}
         >
           <SelectTrigger className="w-full bg-white">
             <SelectValue placeholder={`Select ${role}`}>
