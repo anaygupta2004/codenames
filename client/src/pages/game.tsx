@@ -157,6 +157,54 @@ export default function GamePage() {
     }
   });
 
+  const handleAITurn = async () => {
+    try {
+      aiTurnInProgress.current = true;
+      const clue = await getAIClue.mutateAsync();
+
+      if (clue && !game?.gameState?.includes("win")) {
+        const isRedTeam = game.currentTurn === "red_turn";
+        const currentTeam = isRedTeam ? "red" : "blue";
+        const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
+        const modelInfo = AI_MODEL_INFO[currentSpymaster as keyof typeof AI_MODEL_INFO];
+
+        setGameLog(prev => [...prev, {
+          team: currentTeam,
+          action: `gives clue: "${clue.word} (${clue.number})"`,
+          result: "correct",
+          player: currentSpymaster as string
+        }]);
+
+        // Start team discussion with shorter timer
+        setIsDiscussing(true);
+        setTimer(30); // Reduced from 60 to 30 seconds
+
+        // Get current team's AI players
+        const currentTeamPlayers = isRedTeam ? game.redPlayers : game.bluePlayers;
+        const aiPlayers = currentTeamPlayers.filter(
+          player => typeof player === 'string' && player !== 'human' && player !== currentSpymaster
+        ) as string[];
+
+        // Run AI discussions in parallel instead of sequentially
+        await Promise.all(aiPlayers.map(async (aiPlayer) => {
+          await discussMove.mutateAsync({
+            model: aiPlayer,
+            team: currentTeam,
+            clue
+          });
+        }));
+
+        // Trigger immediate voting after discussions
+        handleTimeoutVoting();
+      }
+    } catch (error) {
+      console.error("Error in AI turn:", error);
+      aiTurnInProgress.current = false;
+      // Switch turns if there's an error
+      await switchTurns();
+    }
+  };
+
   useEffect(() => {
     if (!game || game.gameState?.includes("win") || aiTurnInProgress.current) return;
 
@@ -166,41 +214,6 @@ export default function GamePage() {
 
     // If it's AI's turn and not discussing yet, start the process
     if (currentSpymaster && !isDiscussing && !lastClue) {
-      const handleAITurn = async () => {
-        try {
-          aiTurnInProgress.current = true;
-          const clue = await getAIClue.mutateAsync();
-
-          if (clue && !game.gameState?.includes("win")) {
-            const modelInfo = AI_MODEL_INFO[currentSpymaster as keyof typeof AI_MODEL_INFO];
-            setGameLog(prev => [...prev, {
-              team: isRedTurn ? "red" : "blue",
-              action: `gives clue: "${clue.word} (${clue.number})"`,
-              result: "correct",
-              player: currentSpymaster
-            }]);
-
-            // Start team discussion
-            setIsDiscussing(true);
-            setTimer(60);
-
-            // Sequential team discussion
-            const aiPlayers = currentTeam.filter(player => typeof player === 'string' && player !== "human" && player !== currentSpymaster);
-            for (const aiPlayer of aiPlayers) {
-              await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
-              await discussMove.mutateAsync({
-                model: aiPlayer,
-                team: isRedTurn ? "red" : "blue",
-                clue
-              });
-            }
-          }
-        } catch (error) {
-          console.error("Error in AI turn:", error);
-          aiTurnInProgress.current = false;
-        }
-      };
-
       handleAITurn();
     }
   }, [game?.currentTurn, isDiscussing, lastClue]);
@@ -277,12 +290,14 @@ export default function GamePage() {
   const switchTurns = async () => {
     try {
       setIsDiscussing(false);
-      const res = await apiRequest("PATCH", `/api/games/${id}`, {
-        currentTurn: game?.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
+      const nextTurn = game?.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+      await apiRequest("PATCH", `/api/games/${id}`, {
+        currentTurn: nextTurn
       });
       await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-      setTimer(60); // Reset timer for next turn
+      setTimer(30); // Reset timer for next turn
       setLastClue(null);
+      aiTurnInProgress.current = false;
     } catch (error) {
       console.error("Error switching turns:", error);
       toast({
