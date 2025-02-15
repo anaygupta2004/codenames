@@ -58,14 +58,14 @@ async function getGeminiGuess(prompt: string): Promise<{ guess: string }> {
   }
 }
 
-async function getGeminiDiscussion(prompt: string): Promise<{ message: string; confidence: number }> {
+async function getGeminiDiscussion(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
   try {
     const result = await model.generateContent(prompt);
     const response = result.response;
     const text = response.text();
-    return JSON.parse(text) as { message: string; confidence: number };
+    return JSON.parse(text) as { message: string; confidence: number; suggestedWord?: string };
   } catch (error) {
     console.error("Error in Gemini discussion:", error);
     return {
@@ -201,23 +201,20 @@ export async function discussAndVote(
   teamDiscussion: TeamDiscussionEntry[],
   gameHistory: GameHistoryEntry[],
   revealedCards: string[],
-): Promise<{ message: string; confidence: number }> {
+): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   if (!clue || !clue.word || typeof clue.number !== 'number') {
     throw new Error("Invalid clue format provided to discussAndVote");
   }
 
   const availableWords = words.filter(word => !revealedCards.includes(word));
-
   const recentDiscussion = teamDiscussion
     .filter(entry => entry.team === team)
-    .sort((a, b) => a.timestamp - b.timestamp) // Ensure chronological order
+    .sort((a, b) => b.timestamp - a.timestamp)
     .map(entry => {
-      const aiService = getAIService(entry.player as AIModel);
-      const modelName = entry.player === "gpt-4o" ? "GPT-4" :
-                       entry.player === "claude-3-5-sonnet-20241022" ? "Claude" :
-                       entry.player === "grok-2-1212" ? "Grok" :
-                       entry.player === "gemini-pro" ? "Gemini" : entry.player;
-      return `${modelName} (${aiService}): ${entry.message} (confidence: ${entry.confidence})`;
+      const modelInfo = getModelInfo(entry.player as AIModel);
+      return `${modelInfo.name} (${modelInfo.service}): ${entry.message} ${
+        entry.suggestedWord ? `[Suggests: ${entry.suggestedWord}]` : ''
+      } (confidence: ${entry.confidence})`;
     })
     .join("\n");
 
@@ -240,14 +237,19 @@ ${recentDiscussion}
 Game History:
 ${previousCluesAndResults}
 
-As ${model === "gpt-4o" ? "GPT-4" : model === "claude-3-5-sonnet-20241022" ? "Claude" : model === "grok-2-1212" ? "Grok" : model === "gemini-pro" ? "Gemini" : "Unknown"}, provide your perspective:
+As ${getModelDisplayName(model)}, provide your perspective:
 1. Analyze the other team members' suggestions
 2. Consider their confidence levels
-3. State your opinion about the best word choice
-4. Express your confidence level (0-1)
-5. If you disagree with others, explain why
+3. If you see a strong suggestion, express support
+4. If you have a different idea, explain why
+5. Express your confidence level (0-1)
+6. Suggest a word if you're confident (>0.7)
 
-Respond in JSON format: { "message": "your detailed analysis", "confidence": number }`;
+Respond in JSON format: { 
+  "message": "your detailed analysis",
+  "confidence": number,
+  "suggestedWord": "word_choice"  // Only include if confidence > 0.7
+}`;
 
   switch (getAIService(model)) {
     case "openai":
@@ -417,7 +419,7 @@ async function getXAIGuess(prompt: string): Promise<{ guess: string }> {
   return JSON.parse(content) as { guess: string };
 }
 
-async function getOpenAIDiscussion(prompt: string): Promise<{ message: string; confidence: number }> {
+async function getOpenAIDiscussion(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
     messages: [{ role: "user", content: prompt }],
@@ -429,10 +431,10 @@ async function getOpenAIDiscussion(prompt: string): Promise<{ message: string; c
     throw new Error("No response from OpenAI");
   }
 
-  return JSON.parse(content) as { message: string; confidence: number };
+  return JSON.parse(content) as { message: string; confidence: number; suggestedWord?: string };
 }
 
-async function getAnthropicDiscussion(prompt: string): Promise<{ message: string; confidence: number }> {
+async function getAnthropicDiscussion(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   const response = await anthropic.messages.create({
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 1024,
@@ -445,7 +447,7 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
 
   try {
     const content = response.content[0].text;
-    return JSON.parse(content) as { message: string; confidence: number };
+    return JSON.parse(content) as { message: string; confidence: number; suggestedWord?: string };
   } catch (error) {
     console.error("Error parsing Anthropic response:", error);
     // Provide a fallback response if JSON parsing fails
@@ -456,7 +458,7 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
   }
 }
 
-async function getXAIDiscussion(prompt: string): Promise<{ message: string; confidence: number }> {
+async function getXAIDiscussion(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
     apiKey: process.env.XAI_API_KEY
@@ -473,7 +475,7 @@ async function getXAIDiscussion(prompt: string): Promise<{ message: string; conf
     throw new Error("No response from xAI");
   }
 
-  return JSON.parse(content) as { message: string; confidence: number };
+  return JSON.parse(content) as { message: string; confidence: number; suggestedWord?: string };
 }
 
 async function getOpenAIVote(prompt: string): Promise<{ approved: boolean; reason: string }> {
@@ -533,4 +535,29 @@ async function getXAIVote(prompt: string): Promise<{ approved: boolean; reason: 
   }
 
   return JSON.parse(content) as { approved: boolean; reason: string };
+}
+
+// Helper function for consistent model display names
+function getModelDisplayName(model: AIModel): string {
+  switch (model) {
+    case "gpt-4o":
+      return "GPT-4";
+    case "claude-3-5-sonnet-20241022":
+      return "Claude";
+    case "grok-2-1212":
+      return "Grok";
+    case "gemini-pro":
+      return "Gemini";
+    default:
+      return "Unknown AI";
+  }
+}
+
+// Update the model info helper
+function getModelInfo(model: AIModel): { name: string; service: AIService } {
+  const service = getAIService(model);
+  return {
+    name: getModelDisplayName(model),
+    service
+  };
 }

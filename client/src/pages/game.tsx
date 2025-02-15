@@ -33,8 +33,10 @@ export default function GamePage() {
   const aiTurnInProgress = useRef(false);
   const [isSpymasterView, setIsSpymasterView] = useState(false);
   const [gameLog, setGameLog] = useState<GameLogEntry[]>([]);
-  const [timer, setTimer] = useState<number>(30);
+  const [timer, setTimer] = useState<number>(30); // Changed from 180 to 30 seconds
   const [isDiscussing, setIsDiscussing] = useState(false);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0.8);
+  const [votingInProgress, setVotingInProgress] = useState(false);
   const timerRef = useRef<NodeJS.Timeout>();
   const [lastClue, setLastClue] = useState<{ word: string; number: number } | null>(null);
 
@@ -65,6 +67,17 @@ export default function GamePage() {
       const res = await apiRequest("POST", `/api/games/${id}/ai/discuss`, params);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+
+      // If confidence is very high, trigger immediate voting
+      if (data.confidence > confidenceThreshold) {
+        setVotingInProgress(true);
+        await voteOnWord.mutateAsync({
+          model: params.model,
+          team: params.team,
+          word: data.suggestedWord
+        });
+      }
+
       return data;
     },
     onSuccess: () => {
@@ -174,6 +187,53 @@ export default function GamePage() {
     }
   }, [game?.currentTurn, isDiscussing, lastClue]);
 
+  useEffect(() => {
+    if (isDiscussing) {
+      const interval = setInterval(() => {
+        setTimer((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            // Force voting when time runs out
+            handleTimeoutVoting();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      return () => clearInterval(interval);
+    }
+  }, [isDiscussing]);
+
+  const handleTimeoutVoting = async () => {
+    if (!game) return;
+
+    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
+    const currentTeamDiscussions = teamDiscussion.filter(entry => entry.team === currentTeam);
+
+    // Find the option with highest confidence
+    const mostConfidentOption = currentTeamDiscussions.reduce((prev, current) => {
+      return (current.confidence > prev.confidence) ? current : prev;
+    }, currentTeamDiscussions[0]);
+
+    if (mostConfidentOption && mostConfidentOption.confidence > 0.6) {
+      // Auto-vote for the most confident option if it's above threshold
+      await voteOnWord.mutateAsync({
+        model: mostConfidentOption.player,
+        team: currentTeam,
+        word: mostConfidentOption.suggestedWord || ''
+      });
+    } else {
+      // Skip turn if no confident options
+      setIsDiscussing(false);
+      // Update turn
+      const nextTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+      await makeGuess.mutateAsync('skip');
+    }
+  };
+
+
   const renderTeamDiscussion = () => {
     if (!game) return null;
 
@@ -192,8 +252,17 @@ export default function GamePage() {
               {currentTeam === "red" ? "Red" : "Blue"} Team Discussion
             </h3>
             {isDiscussing && (
-              <div className="text-sm font-medium">
-                Time remaining: {timer}s
+              <div className="flex items-center gap-2">
+                <div className={`text-sm font-medium ${
+                  timer <= 10 ? 'text-red-500' : ''
+                }`}>
+                  Time remaining: {timer}s
+                </div>
+                {votingInProgress && (
+                  <span className="text-sm text-green-500">
+                    Voting in progress...
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -206,8 +275,8 @@ export default function GamePage() {
                   <div
                     key={index}
                     className={`p-4 rounded-lg ${
-                      entry.team === "red" 
-                        ? "bg-red-50 text-red-900 border-red-200" 
+                      entry.team === "red"
+                        ? "bg-red-50 text-red-900 border-red-200"
                         : "bg-blue-50 text-blue-900 border-blue-200"
                     } border`}
                   >
@@ -232,9 +301,9 @@ export default function GamePage() {
   };
 
   const getModelInfo = (model: string) => {
-    return AI_MODEL_INFO[model as keyof typeof AI_MODEL_INFO] || { 
-      name: model, 
-      Icon: AlertCircle 
+    return AI_MODEL_INFO[model as keyof typeof AI_MODEL_INFO] || {
+      name: model,
+      Icon: AlertCircle
     };
   };
 
@@ -294,7 +363,7 @@ export default function GamePage() {
           clearInterval(turnTimerRef.current);
           const nextTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
           storage.updateGame(game.id, { currentTurn: nextTurn });
-          return 180; 
+          return 180;
         }
         return prev - 1;
       });
@@ -346,7 +415,6 @@ export default function GamePage() {
       default: return "";
     }
   };
-
 
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
