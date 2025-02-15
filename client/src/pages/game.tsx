@@ -130,12 +130,18 @@ export default function GamePage() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      return data;
+      return { data, result };
     },
-    onSuccess: () => {
+    onSuccess: ({ data, result }) => {
       queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
       aiTurnInProgress.current = false;
       setLastClue(null);
+      setIsDiscussing(false);
+
+      // Reset timer when turn changes due to wrong guess
+      if (result === "wrong" || result === "assassin") {
+        setTimer(30);
+      }
     }
   });
 
@@ -225,11 +231,13 @@ export default function GamePage() {
         word: mostConfidentOption.suggestedWord || ''
       });
     } else {
-      // Skip turn if no confident options
+      // End discussion and switch turns if no confident options
       setIsDiscussing(false);
-      // Update turn
-      const nextTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
-      await makeGuess.mutateAsync('skip');
+      // Update turn through normal game update mechanism
+      const res = await apiRequest("PATCH", `/api/games/${game.id}`, {
+        currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
+      });
+      await queryClient.invalidateQueries({ queryKey: [`/api/games/${game.id}`] });
     }
   };
 
