@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { getSpymasterClue, getGuesserMove, discussAndVote, makeConsensusVote } from "./lib/ai-service";
 import { insertGameSchema } from "@shared/schema";
@@ -7,6 +8,9 @@ import type { Game, GameState, TeamDiscussionEntry, ConsensusVote, GameHistoryEn
 import type { AIModel } from "./lib/ai-service";
 
 const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"] as const;
+
+// Track active game discussions
+const gameDiscussions = new Map<number, Set<WebSocket>>();
 
 function getRandomDelay(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -31,6 +35,77 @@ interface GuessHistoryEntry extends GameHistoryEntry {
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  const httpServer = createServer(app);
+
+  // Initialize WebSocket server
+  const wss = new WebSocketServer({ 
+    server: httpServer, 
+    path: '/ws',
+    perMessageDeflate: false // Disable per-message deflate to reduce latency
+  });
+
+  wss.on('connection', (ws: WebSocket) => {
+    console.log('New WebSocket connection established');
+    let gameId: number | null = null;
+
+    ws.on('message', async (message: Buffer) => {
+      try {
+        const data = JSON.parse(message.toString());
+        console.log('Received WebSocket message:', data);
+
+        if (data.type === 'join') {
+          gameId = Number(data.gameId);
+          if (!gameDiscussions.has(gameId)) {
+            gameDiscussions.set(gameId, new Set());
+          }
+          gameDiscussions.get(gameId)?.add(ws);
+          console.log(`Client joined game ${gameId}`);
+        }
+
+        // Broadcast discussion updates to all connected clients
+        if (data.type === 'discussion' && gameId) {
+          const clients = gameDiscussions.get(gameId);
+          if (clients) {
+            const messageData = JSON.stringify({
+              type: 'discussion',
+              content: data.content,
+              team: data.team,
+              player: data.player,
+              confidence: data.confidence,
+              suggestedWord: data.suggestedWord,
+              timestamp: Date.now()
+            });
+
+            clients.forEach((client) => {
+              if (client !== ws && client.readyState === WebSocket.OPEN) {
+                client.send(messageData);
+              }
+            });
+          }
+        }
+      } catch (error) {
+        console.error('WebSocket message error:', error);
+      }
+    });
+
+    ws.on('close', () => {
+      if (gameId) {
+        const clients = gameDiscussions.get(gameId);
+        if (clients) {
+          clients.delete(ws);
+          if (clients.size === 0) {
+            gameDiscussions.delete(gameId);
+          }
+        }
+        console.log(`Client left game ${gameId}`);
+      }
+    });
+
+    ws.on('error', (error) => {
+      console.error('WebSocket error:', error);
+    });
+  });
+
   app.use('/api', (req, res, next) => {
     res.setHeader('Content-Type', 'application/json');
     next();
@@ -317,6 +392,5 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  const httpServer = createServer(app);
   return httpServer;
 }

@@ -36,13 +36,75 @@ export default function GamePage() {
   const aiTurnInProgress = useRef(false);
   const [isSpymasterView, setIsSpymasterView] = useState(false);
   const [gameLog, setGameLog] = useState<GameLogEntry[]>([]);
-  const [turnTimer, setTurnTimer] = useState<number>(60); // 60 seconds per turn
-  const [discussionTimer, setDiscussionTimer] = useState<number>(20); // 20 seconds for discussion
+  const [turnTimer, setTurnTimer] = useState<number>(60);
+  const [discussionTimer, setDiscussionTimer] = useState<number>(60);
   const [isDiscussing, setIsDiscussing] = useState(false);
-  const [confidenceThreshold, setConfidenceThreshold] = useState(0.8);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0.7);
   const [votingInProgress, setVotingInProgress] = useState(false);
-  const timerRef = useRef<NodeJS.Timeout>();
+  const socketRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const [lastClue, setLastClue] = useState<{ word: string; number: number } | null>(null);
+
+  // Initialize WebSocket connection with reconnection logic
+  useEffect(() => {
+    if (!id) return;
+
+    const connectWebSocket = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const socket = new WebSocket(wsUrl);
+
+      socket.onopen = () => {
+        console.log('WebSocket connected');
+        socket.send(JSON.stringify({ type: 'join', gameId: Number(id) }));
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'discussion') {
+            // Update game state to reflect new discussion
+            queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+
+            // Add to game log if it's a meaningful discussion
+            if (data.content) {
+              setGameLog(prev => [...prev, {
+                team: data.team,
+                action: data.content,
+                result: "pending",
+                player: data.player
+              }]);
+            }
+          }
+        } catch (error) {
+          console.error('Error processing WebSocket message:', error);
+        }
+      };
+
+      socket.onclose = () => {
+        console.log('WebSocket disconnected. Attempting to reconnect...');
+        // Attempt to reconnect after 3 seconds
+        reconnectTimeoutRef.current = setTimeout(connectWebSocket, 3000);
+      };
+
+      socket.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+
+      socketRef.current = socket;
+    };
+
+    connectWebSocket();
+
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.close();
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+    };
+  }, [id]);
 
   const { data: game, isLoading } = useQuery<Game>({
     queryKey: [`/api/games/${id}`],
@@ -138,13 +200,12 @@ export default function GamePage() {
     }
   });
 
-  // Updated handleAITurn to manage faster discussions
+  // Update handleAITurn for faster parallel discussions
   const handleAITurn = async () => {
     try {
       if (aiTurnInProgress.current || !game) return;
       aiTurnInProgress.current = true;
 
-      // Get current team configuration
       const isRedTeam = game.currentTurn === "red_turn";
       const currentTeam = isRedTeam ? "red" : "blue";
       const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
@@ -152,71 +213,81 @@ export default function GamePage() {
 
       // 1. Get clue from spymaster if needed
       if (!lastClue) {
-        try {
-          const clue = await getAIClue.mutateAsync();
-          setLastClue(clue);
+        const clue = await getAIClue.mutateAsync();
+        setLastClue(clue);
 
-          if (currentSpymaster && typeof currentSpymaster === 'string') {
-            setGameLog(prev => [...prev, {
-              team: currentTeam,
-              action: `gives clue: "${clue.word} (${clue.number})"`,
-              result: "pending",
-              player: currentSpymaster
-            }]);
-          }
-        } catch (error) {
-          console.error("Error getting clue:", error);
-          return;
+        // Broadcast spymaster's clue
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            type: 'discussion',
+            content: `Spymaster gives clue: ${clue.word} (${clue.number})`,
+            team: currentTeam,
+            player: currentSpymaster,
+            timestamp: Date.now()
+          }));
         }
       }
 
       if (!lastClue) return;
 
-      // 2. Start team discussion with shorter timer
+      // 2. Start team discussion
       setIsDiscussing(true);
-      setDiscussionTimer(60); // 60 seconds for discussion
+      setDiscussionTimer(60);
 
-      // Get AI operatives (excluding spymaster)
       const aiOperatives = currentTeamPlayers.filter(
         player => typeof player === 'string' &&
           player !== 'human' &&
           player !== currentSpymaster
       ) as AIModel[];
 
-      // 3. Have each AI operative discuss the clue with Promise.all for parallel execution
-      const discussionPromises = aiOperatives.map(aiOperative =>
-        discussMove.mutateAsync({
+      // 3. Have all AI operatives discuss simultaneously
+      const discussionPromises = aiOperatives.map(async (aiOperative) => {
+        const result = await discussMove.mutateAsync({
           model: aiOperative,
           team: currentTeam,
           clue: lastClue
-        })
-      );
+        });
 
-      await Promise.all(discussionPromises);
+        // Broadcast each AI's discussion contribution
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            type: 'discussion',
+            content: result.message,
+            team: currentTeam,
+            player: aiOperative,
+            confidence: result.confidence,
+            suggestedWord: result.suggestedWord,
+            timestamp: Date.now()
+          }));
+        }
 
-      // 4. Immediately start voting process after discussions
-      const currentTeamDiscussion = game.teamDiscussion as TeamDiscussionEntry[];
+        return result;
+      });
 
-      // Find the most confident suggestion
-      const suggestions = currentTeamDiscussion
-        .filter(entry => entry.team === currentTeam && entry.suggestedWord)
-        .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+      const discussions = await Promise.all(discussionPromises);
 
-      if (suggestions.length > 0 && (suggestions[0].confidence || 0) > confidenceThreshold) {
-        // All AI operatives vote on the most confident suggestion
+      // 4. Find the most confident suggestion
+      const bestSuggestion = discussions
+        .filter(d => d.suggestedWord && d.confidence > confidenceThreshold)
+        .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
+
+      if (bestSuggestion?.suggestedWord) {
+        // 5. All AI operatives vote on the best suggestion
+        setVotingInProgress(true);
         const votePromises = aiOperatives.map(aiOperative =>
           voteOnWord.mutateAsync({
             model: aiOperative,
             team: currentTeam,
-            word: suggestions[0].suggestedWord!
+            word: bestSuggestion.suggestedWord!
           })
         );
 
         await Promise.all(votePromises);
       } else {
-        // If no confident suggestions, skip the turn
+        // If no confident suggestions, end turn
         await switchTurns();
       }
+
     } catch (error) {
       console.error("Error in AI turn:", error);
       aiTurnInProgress.current = false;
@@ -272,10 +343,10 @@ export default function GamePage() {
       });
     }, 1000);
 
-    // Force discussion to end after 20 seconds
+    // Force discussion to end after 60 seconds
     const discussionTimeout = setTimeout(() => {
       handleDiscussionTimeUp();
-    }, 20000);
+    }, 60000);
 
     return () => {
       clearInterval(interval);
@@ -306,7 +377,7 @@ export default function GamePage() {
     });
 
     setIsDiscussing(false);
-    setDiscussionTimer(20); // Reset discussion timer
+    setDiscussionTimer(60); // Reset discussion timer
     await handleTeamDecision();
   };
 
@@ -341,9 +412,10 @@ export default function GamePage() {
 
       // Reset all turn-related state
       setTurnTimer(60);
-      setDiscussionTimer(20);
+      setDiscussionTimer(60);
       setLastClue(null);
       aiTurnInProgress.current = false;
+      setVotingInProgress(false);
 
       // Refresh game data
       await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
@@ -446,8 +518,8 @@ export default function GamePage() {
 
   useEffect(() => {
     return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
+      if (socketRef.current) {
+        socketRef.current.close();
       }
     };
   }, []);
