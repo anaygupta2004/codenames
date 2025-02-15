@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { type Game, type CardType, type TeamDiscussionEntry } from "@shared/schema";
+import { type Game, type TeamDiscussionEntry, type ConsensusVote } from "@shared/schema";
 import { useParams } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
@@ -18,8 +18,6 @@ const AI_MODEL_INFO = {
   "claude-3-5-sonnet-20241022": { name: "Claude", Icon: SiAnthropic },
   "grok-2-1212": { name: "Grok", Icon: Bot }
 };
-
-// Rest of the file remains unchanged until the gameLog type
 
 type GameLogEntry = {
   team: string;
@@ -176,6 +174,7 @@ export default function GamePage() {
     const aiPlayers = currentTeam.filter(player => player !== "human");
 
     try {
+      // Start discussion timer
       timerRef.current = setInterval(() => {
         setTimer(prev => {
           if (prev <= 1) {
@@ -187,6 +186,7 @@ export default function GamePage() {
         });
       }, 1000);
 
+      // Sequential team discussion with random delays
       for (const aiPlayer of aiPlayers) {
         await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
 
@@ -195,10 +195,7 @@ export default function GamePage() {
         await discussMove.mutateAsync({
           model: aiPlayer,
           team: game.currentTurn === "red_turn" ? "red" : "blue",
-          clue: {
-            word: getAIClue.data.word,
-            number: getAIClue.data.number
-          }
+          clue: getAIClue.data
         });
       }
 
@@ -254,12 +251,12 @@ export default function GamePage() {
         aiTurnInProgress.current = true;
         const clue = await getAIClue.mutateAsync();
         if (clue && !game.gameState?.includes("win")) {
-          const { name } = getModelInfo(currentSpymasterIsAI as string);
+          const { name } = getModelInfo(currentSpymasterIsAI.toString());
           setGameLog(prev => [...prev, {
             team: isRedTurn ? "red" : "blue",
             action: `${name} gives clue: "${clue.word} (${clue.number})"`,
             result: "correct",
-            player: currentSpymasterIsAI 
+            player: currentSpymasterIsAI.toString()
           }]);
 
           // Automatically start discussion after clue is given
@@ -360,7 +357,7 @@ export default function GamePage() {
       <Card className="mt-4">
         <CardContent className="p-4">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="font-bold text-lg">Team Discussion</h3>
+            <h3 className="font-bold text-lg">{currentTeam === "red" ? "Red" : "Blue"} Team Discussion</h3>
             {isDiscussing && (
               <div className="text-sm font-medium">
                 Time remaining: {timer}s
@@ -376,7 +373,7 @@ export default function GamePage() {
                   <div
                     key={index}
                     className={`p-3 rounded-lg ${
-                      entry.team === "red" ? "bg-red-50" : "bg-blue-50"
+                      entry.team === "red" ? "bg-red-50 text-red-900" : "bg-blue-50 text-blue-900"
                     }`}
                   >
                     <div className="flex justify-between items-center mb-1">
