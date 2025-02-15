@@ -47,7 +47,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const opposingTeamWords = isRedTurn ? game.blueTeam : game.redTeam;
 
       // Map the spymaster to a specific AI model
-      const spymasterModel: AIModel = isRedTurn ? 
+      const spymasterModel: AIModel = isRedTurn ?
         (typeof game.redSpymaster === 'string' ? game.redSpymaster as AIModel : "gpt-4o") :
         (typeof game.blueSpymaster === 'string' ? game.blueSpymaster as AIModel : "gpt-4o");
 
@@ -163,34 +163,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const teamDiscussion = game.teamDiscussion || [];
       const gameHistory = game.gameHistory || [];
 
-      const discussion = await discussAndVote(
-        model as AIModel,
-        team,
-        game.words,
-        clue,
-        teamDiscussion as TeamDiscussionEntry[],
-        gameHistory as GameHistoryEntry[],
-        game.revealedCards
-      );
+      try {
+        const discussion = await discussAndVote(
+          model as AIModel,
+          team,
+          game.words,
+          clue,
+          teamDiscussion as TeamDiscussionEntry[],
+          gameHistory as GameHistoryEntry[],
+          game.revealedCards
+        );
 
-      const newDiscussionEntry: TeamDiscussionEntry = {
-        team,
-        player: model,
-        message: discussion.message,
-        confidence: discussion.confidence,
-        timestamp: Date.now()
-      };
+        const newDiscussionEntry: TeamDiscussionEntry = {
+          team,
+          player: model,
+          message: discussion.message,
+          confidence: discussion.confidence,
+          timestamp: Date.now()
+        };
 
-      const updatedTeamDiscussion = [...teamDiscussion, newDiscussionEntry];
+        const updatedTeamDiscussion = [...teamDiscussion, newDiscussionEntry];
 
-      await storage.updateGame(game.id, {
-        teamDiscussion: updatedTeamDiscussion
-      });
+        await storage.updateGame(game.id, {
+          teamDiscussion: updatedTeamDiscussion as any 
+        });
 
-      res.json(newDiscussionEntry);
-    } catch (error: any) {
-      console.error("Error in AI discussion:", error);
-      res.status(500).json({ error: error.message });
+        res.json(newDiscussionEntry);
+      } catch (error) {
+        console.error("Error in AI discussion:", error);
+        // Send a more graceful error response
+        res.status(500).json({
+          error: "An error occurred during the discussion",
+          message: error instanceof Error ? error.message : "Unknown error"
+        });
+      }
+    } catch (error) {
+      console.error("Error in route handler:", error);
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 

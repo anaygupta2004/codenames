@@ -246,7 +246,7 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
     messages: [{ role: 'user', content: prompt }],
   });
 
-  if (!response.content[0]?.type === 'text') {
+  if (!response.content[0] || response.content[0].type !== 'text') {
     throw new Error("Invalid response format from Anthropic");
   }
 
@@ -307,7 +307,7 @@ async function getAnthropicGuess(prompt: string): Promise<{ guess: string }> {
     messages: [{ role: 'user', content: prompt }],
   });
 
-  if (!response.content[0]?.type === 'text') {
+  if (!response.content[0] || response.content[0].type !== 'text') {
     throw new Error("Invalid response format from Anthropic");
   }
 
@@ -356,11 +356,21 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
     messages: [{ role: 'user', content: prompt }],
   });
 
-  if (!response.content[0]?.type === 'text') {
+  if (!response.content[0] || response.content[0].type !== 'text') {
     throw new Error("Invalid response format from Anthropic");
   }
 
-  return JSON.parse(response.content[0].text) as { message: string; confidence: number };
+  try {
+    const content = response.content[0].text;
+    return JSON.parse(content) as { message: string; confidence: number };
+  } catch (error) {
+    console.error("Error parsing Anthropic response:", error);
+    // Provide a fallback response if JSON parsing fails
+    return {
+      message: "I encountered an error processing the response. Let's continue our discussion.",
+      confidence: 0.5
+    };
+  }
 }
 
 async function getXAIDiscussion(prompt: string): Promise<{ message: string; confidence: number }> {
@@ -405,11 +415,21 @@ async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; re
     messages: [{ role: 'user', content: prompt }],
   });
 
-  if (!response.content[0]?.type === 'text') {
+  if (!response.content[0] || response.content[0].type !== 'text') {
     throw new Error("Invalid response format from Anthropic");
   }
 
-  return JSON.parse(response.content[0].text) as { approved: boolean; reason: string };
+  try {
+    const content = response.content[0].text;
+    return JSON.parse(content) as { approved: boolean; reason: string };
+  } catch (error) {
+    console.error("Error parsing Anthropic vote response:", error);
+    // Provide a fallback response if JSON parsing fails
+    return {
+      approved: false,
+      reason: "Could not process the voting decision due to an error."
+    };
+  }
 }
 
 async function getXAIVote(prompt: string): Promise<{ approved: boolean; reason: string }> {
