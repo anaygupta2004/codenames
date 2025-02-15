@@ -45,11 +45,15 @@ export default function GamePage() {
     queryKey: [`/api/games/${id}`],
   });
 
+  // Update the getAIClue mutation with better error handling
   const getAIClue = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/clue`);
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) {
+        console.error("AI Clue Error:", data.error);
+        throw new Error(data.error);
+      }
       setLastClue(data);
       return data;
     },
@@ -60,6 +64,7 @@ export default function GamePage() {
         variant: "destructive",
       });
       aiTurnInProgress.current = false;
+      setIsDiscussing(false);
     },
   });
 
@@ -172,6 +177,7 @@ export default function GamePage() {
     }
   });
 
+  // Update handleAITurn to handle errors better
   const handleAITurn = async () => {
     try {
       if (aiTurnInProgress.current || !game) return;
@@ -179,19 +185,26 @@ export default function GamePage() {
 
       // Only get a clue if we don't have one for this turn
       if (!lastClue) {
-        const clue = await getAIClue.mutateAsync();
-        setLastClue(clue);
+        try {
+          const clue = await getAIClue.mutateAsync();
+          setLastClue(clue);
 
-        const isRedTeam = game.currentTurn === "red_turn";
-        const currentTeam = isRedTeam ? "red" : "blue";
-        const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
+          const isRedTeam = game.currentTurn === "red_turn";
+          const currentTeam = isRedTeam ? "red" : "blue";
+          const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
 
-        setGameLog(prev => [...prev, {
-          team: currentTeam,
-          action: `gives clue: "${clue.word} (${clue.number})"`,
-          result: "correct",
-          player: currentSpymaster as string
-        }]);
+          if (currentSpymaster && typeof currentSpymaster === 'string') {
+            setGameLog(prev => [...prev, {
+              team: currentTeam,
+              action: `gives clue: "${clue.word} (${clue.number})"`,
+              result: "correct",
+              player: currentSpymaster
+            }]);
+          }
+        } catch (error) {
+          console.error("Error getting clue:", error);
+          return;
+        }
       }
 
       // Start team discussion
@@ -211,19 +224,22 @@ export default function GamePage() {
       ) as string[];
 
       // Run AI discussions in parallel for operatives only
-      await Promise.all(aiOperatives.map(async (aiPlayer) => {
-        await discussMove.mutateAsync({
-          model: aiPlayer,
-          team: currentTeam,
-          clue: lastClue!
-        });
-      }));
+      if (lastClue) {
+        await Promise.all(aiOperatives.map(async (aiPlayer) => {
+          await discussMove.mutateAsync({
+            model: aiPlayer,
+            team: currentTeam,
+            clue: lastClue
+          });
+        }));
 
-      // Trigger voting after discussions
-      handleTimeoutVoting();
+        // Trigger voting after discussions
+        handleTimeoutVoting();
+      }
     } catch (error) {
       console.error("Error in AI turn:", error);
       aiTurnInProgress.current = false;
+      setIsDiscussing(false);
       await switchTurns();
     }
   };

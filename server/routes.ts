@@ -48,12 +48,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Only allow spymaster to give clues
       const currentSpymaster = isRedTurn ? game.redSpymaster : game.blueSpymaster;
-      if (!currentSpymaster || typeof currentSpymaster !== 'string' || currentSpymaster === 'human') {
+
+      // Check if currentSpymaster is a valid AI model
+      const validAIModels = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"];
+      if (!currentSpymaster || !validAIModels.includes(currentSpymaster as string)) {
         return res.status(400).json({ error: "Invalid spymaster configuration" });
       }
 
       const clue = await getSpymasterClue(
-        currentSpymaster,
+        currentSpymaster as AIModel,
         game.words,
         currentTeamWords,
         opposingTeamWords,
