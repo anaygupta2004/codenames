@@ -198,30 +198,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       await new Promise(resolve => setTimeout(resolve, getRandomDelay(500, 2000)));
 
-      const teamDiscussion = game.teamDiscussion || [];
-      const gameHistory = game.gameHistory || [];
+      const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
+      const gameHistory = (game.gameHistory || []) as GameHistoryEntry[];
 
       const discussion = await discussAndVote(
         model as AIModel,
         team,
         game.words,
         clue,
-        teamDiscussion as TeamDiscussionEntry[],
-        gameHistory as GameHistoryEntry[],
+        teamDiscussion,
+        gameHistory,
         game.revealedCards
       );
 
       const newDiscussionEntry: TeamDiscussionEntry = {
         team,
-        player: model,
+        player: model as AIModel,
         message: discussion.message,
         confidence: discussion.confidence,
-        suggestedWord: discussion.suggestedWord,
         timestamp: Date.now()
       };
 
+      if (discussion.suggestedWord) {
+        (newDiscussionEntry as any).suggestedWord = discussion.suggestedWord;
+      }
+
       await storage.updateGame(game.id, {
-        teamDiscussion: [...teamDiscussion, newDiscussionEntry] as TeamDiscussionEntry[]
+        teamDiscussion: [...teamDiscussion, newDiscussionEntry]
       });
 
       res.json(newDiscussionEntry);
@@ -247,7 +250,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const consensusVotes = (game.consensusVotes || []) as ConsensusVote[];
 
       const vote = await makeConsensusVote(
-        model,
+        model as AIModel,
         team,
         word,
         teamDiscussion
@@ -255,7 +258,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const newVote: ConsensusVote = {
         team,
-        player: model,
+        player: model as AIModel,
         word,
         approved: vote.approved,
         timestamp: Date.now()
@@ -267,7 +270,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const teamVotes = (updatedGame.consensusVotes as ConsensusVote[])
         .filter(v => v.team === team && v.word === word);
-      const teamAIPlayers = currentTeamPlayers.filter(p => p !== "human");
+      const teamAIPlayers = currentTeamPlayers.filter(p => p !== "human") as AIModel[];
       const allApproved = teamVotes.length === teamAIPlayers.length &&
         teamVotes.every(v => v.approved);
 

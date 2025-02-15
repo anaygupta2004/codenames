@@ -105,7 +105,7 @@ export default function GamePage() {
 
   const makeGuess = useMutation({
     mutationFn: async (word: string) => {
-      if (!game) return;
+      if (!game) return null;
 
       // Prevent guessing already revealed words
       if (game.revealedCards.includes(word)) {
@@ -114,7 +114,7 @@ export default function GamePage() {
           description: "This word has already been revealed",
           variant: "destructive",
         });
-        return;
+        return null;
       }
 
       const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
@@ -147,7 +147,10 @@ export default function GamePage() {
       if (data.error) throw new Error(data.error);
       return { data, result };
     },
-    onSuccess: ({ data, result }) => {
+    onSuccess: (response) => {
+      if (!response) return;
+      const { data, result } = response;
+
       queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
       aiTurnInProgress.current = false;
       setLastClue(null);
@@ -386,6 +389,7 @@ export default function GamePage() {
                   Icon: Bot
                 };
                 const { Icon } = modelInfo;
+                const suggestedWord = entry.suggestedWord;
 
                 return (
                   <div
@@ -406,9 +410,9 @@ export default function GamePage() {
                       </span>
                     </div>
                     <p className="text-sm leading-relaxed">{entry.message}</p>
-                    {entry.suggestedWord && (
+                    {suggestedWord && (
                       <p className="text-sm mt-2 font-medium">
-                        Suggests: {entry.suggestedWord}
+                        Suggests: {suggestedWord}
                       </p>
                     )}
                   </div>
