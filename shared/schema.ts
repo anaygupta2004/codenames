@@ -13,9 +13,9 @@ export const games = pgTable("games", {
   redScore: integer("red_score").notNull().default(0),
   blueScore: integer("blue_score").notNull().default(0),
   gameState: text("game_state").notNull(),
-  // AI player assignments
-  redSpymaster: boolean("red_spymaster_is_ai").notNull(),
-  blueSpymaster: boolean("blue_spymaster_is_ai").notNull(),
+  // AI player assignments - store actual model names instead of booleans
+  redSpymaster: text("red_spymaster").notNull(),
+  blueSpymaster: text("blue_spymaster").notNull(),
   redPlayers: text("red_players").array().notNull(),
   bluePlayers: text("blue_players").array().notNull(),
   revealedCards: text("revealed_cards").array().notNull().default([]),
@@ -55,6 +55,7 @@ export type GameHistoryEntry = {
   type: "clue" | "guess";
   content: string;
   result?: "correct" | "wrong" | "assassin";
+  timestamp: number;
 };
 
 export type TeamDiscussionEntry = {
@@ -63,6 +64,7 @@ export type TeamDiscussionEntry = {
   message: string;
   confidence: number;
   timestamp: number;
+  suggestedWord?: string;
 };
 
 export type ConsensusVote = {
