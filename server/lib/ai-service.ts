@@ -1,16 +1,18 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { type CardType, type GameHistoryEntry, type TeamDiscussionEntry, type ConsensusVote } from "@shared/schema";
 
 // the newest OpenAI model is "gpt-4o" which was released May 13, 2024
 // the newest Anthropic model is "claude-3-5-sonnet-20241022" which was released October 22, 2024
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || '');
 
-export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212";
-export type AIService = "openai" | "anthropic" | "xai";
+export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | "gemini-pro";
+export type AIService = "openai" | "anthropic" | "xai" | "google";
 
-const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212"];
+const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"];
 
 function validateModel(model: string): AIModel {
   if (!VALID_MODELS.includes(model)) {
@@ -19,110 +21,78 @@ function validateModel(model: string): AIModel {
   return model as AIModel;
 }
 
-export async function discussAndVote(
-  model: AIModel,
-  team: "red" | "blue",
-  words: string[],
-  clue: { word: string; number: number } | undefined,
-  teamDiscussion: TeamDiscussionEntry[],
-  gameHistory: GameHistoryEntry[],
-  revealedCards: string[],
-): Promise<{ message: string; confidence: number }> {
-  if (!clue || !clue.word || typeof clue.number !== 'number') {
-    throw new Error("Invalid clue format provided to discussAndVote");
-  }
+function getAIService(model: AIModel): AIService {
+  if (model === "gpt-4o") return "openai";
+  if (model === "claude-3-5-sonnet-20241022") return "anthropic";
+  if (model === "grok-2-1212") return "xai";
+  if (model === "gemini-pro") return "google";
+  throw new Error(`Invalid AI model: ${model}`);
+}
 
-  const availableWords = words.filter(word => !revealedCards.includes(word));
+// Add Gemini functions
+async function getGeminiClue(prompt: string): Promise<{ word: string; number: number }> {
+  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-  const recentDiscussion = teamDiscussion
-    .filter(entry => entry.team === team)
-    .sort((a, b) => a.timestamp - b.timestamp) // Ensure chronological order
-    .map(entry => {
-      const aiService = getAIService(entry.player as AIModel);
-      const modelName = entry.player === "gpt-4o" ? "GPT-4" :
-                       entry.player === "claude-3-5-sonnet-20241022" ? "Claude" :
-                       entry.player === "grok-2-1212" ? "Grok" : entry.player;
-      return `${modelName} (${aiService}): ${entry.message} (confidence: ${entry.confidence})`;
-    })
-    .join("\n");
-
-  const previousCluesAndResults = gameHistory
-    .filter(entry => entry.type === "clue" || entry.type === "guess")
-    .map(entry => {
-      if (entry.type === "clue") return `Clue: ${entry.content}`;
-      return `Guess: ${entry.content} (${entry.result})`;
-    })
-    .join("\n");
-
-  const prompt = `As a Codenames AI player, analyze the team discussion:
-
-Current clue: "${clue.word}" (${clue.number})
-Available words: ${availableWords.join(", ")}
-
-Team Discussion:
-${recentDiscussion}
-
-Game History:
-${previousCluesAndResults}
-
-As ${model === "gpt-4o" ? "GPT-4" : model === "claude-3-5-sonnet-20241022" ? "Claude" : "Grok"}, provide your perspective:
-1. Analyze the other team members' suggestions
-2. Consider their confidence levels
-3. State your opinion about the best word choice
-4. Express your confidence level (0-1)
-5. If you disagree with others, explain why
-
-Respond in JSON format: { "message": "your detailed analysis", "confidence": number }`;
-
-  switch (getAIService(model)) {
-    case "openai":
-      return await getOpenAIDiscussion(prompt);
-    case "anthropic":
-      return await getAnthropicDiscussion(prompt);
-    case "xai":
-      return await getXAIDiscussion(prompt);
-    default:
-      throw new Error("Invalid AI model");
+  try {
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const text = response.text();
+    return JSON.parse(text) as { word: string; number: number };
+  } catch (error) {
+    console.error("Error in Gemini clue generation:", error);
+    throw new Error("Failed to generate clue with Gemini");
   }
 }
 
-export async function makeConsensusVote(
-  model: AIModel,
-  team: "red" | "blue",
-  proposedWord: string,
-  teamDiscussion: TeamDiscussionEntry[],
-): Promise<{ approved: boolean; reason: string }> {
-  const recentDiscussion = teamDiscussion
-    .filter(entry => entry.team === team)
-    .map(entry => `${entry.player}: ${entry.message} (confidence: ${entry.confidence})`)
-    .join("\n");
+async function getGeminiGuess(prompt: string): Promise<{ guess: string }> {
+  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-  const prompt = `As a Codenames AI player, decide whether to approve the proposed guess:
-
-Proposed word: ${proposedWord}
-
-Team Discussion:
-${recentDiscussion}
-
-Consider:
-1. Team consensus level
-2. Confidence scores
-3. Potential risks
-
-Respond in JSON format: { "approved": boolean, "reason": "explanation of your decision" }`;
-
-  switch (getAIService(model)) {
-    case "openai":
-      return await getOpenAIVote(prompt);
-    case "anthropic":
-      return await getAnthropicVote(prompt);
-    case "xai":
-      return await getXAIVote(prompt);
-    default:
-      throw new Error("Invalid AI model");
+  try {
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const text = response.text();
+    return JSON.parse(text) as { guess: string };
+  } catch (error) {
+    console.error("Error in Gemini guess generation:", error);
+    throw new Error("Failed to generate guess with Gemini");
   }
 }
 
+async function getGeminiDiscussion(prompt: string): Promise<{ message: string; confidence: number }> {
+  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const text = response.text();
+    return JSON.parse(text) as { message: string; confidence: number };
+  } catch (error) {
+    console.error("Error in Gemini discussion:", error);
+    return {
+      message: "I encountered an error processing the response. Let's continue our discussion.",
+      confidence: 0.5
+    };
+  }
+}
+
+async function getGeminiVote(prompt: string): Promise<{ approved: boolean; reason: string }> {
+  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const text = response.text();
+    return JSON.parse(text) as { approved: boolean; reason: string };
+  } catch (error) {
+    console.error("Error in Gemini vote:", error);
+    return {
+      approved: false,
+      reason: "Could not process the voting decision due to an error."
+    };
+  }
+}
+
+// Update the main functions to include Gemini
 export async function getSpymasterClue(
   model: string | AIModel,
   words: string[],
@@ -170,6 +140,8 @@ The clue must follow Codenames rules:
       return await getAnthropicClue(prompt);
     case "xai":
       return await getXAIClue(prompt);
+    case "google":
+      return await getGeminiClue(prompt);
     default:
       throw new Error("Invalid AI model");
   }
@@ -214,6 +186,117 @@ Respond in JSON format: { "guess": "chosen_word" }`;
       return (await getAnthropicGuess(prompt)).guess;
     case "xai":
       return (await getXAIGuess(prompt)).guess;
+    case "google":
+      return (await getGeminiGuess(prompt)).guess;
+    default:
+      throw new Error("Invalid AI model");
+  }
+}
+
+export async function discussAndVote(
+  model: AIModel,
+  team: "red" | "blue",
+  words: string[],
+  clue: { word: string; number: number } | undefined,
+  teamDiscussion: TeamDiscussionEntry[],
+  gameHistory: GameHistoryEntry[],
+  revealedCards: string[],
+): Promise<{ message: string; confidence: number }> {
+  if (!clue || !clue.word || typeof clue.number !== 'number') {
+    throw new Error("Invalid clue format provided to discussAndVote");
+  }
+
+  const availableWords = words.filter(word => !revealedCards.includes(word));
+
+  const recentDiscussion = teamDiscussion
+    .filter(entry => entry.team === team)
+    .sort((a, b) => a.timestamp - b.timestamp) // Ensure chronological order
+    .map(entry => {
+      const aiService = getAIService(entry.player as AIModel);
+      const modelName = entry.player === "gpt-4o" ? "GPT-4" :
+                       entry.player === "claude-3-5-sonnet-20241022" ? "Claude" :
+                       entry.player === "grok-2-1212" ? "Grok" :
+                       entry.player === "gemini-pro" ? "Gemini" : entry.player;
+      return `${modelName} (${aiService}): ${entry.message} (confidence: ${entry.confidence})`;
+    })
+    .join("\n");
+
+  const previousCluesAndResults = gameHistory
+    .filter(entry => entry.type === "clue" || entry.type === "guess")
+    .map(entry => {
+      if (entry.type === "clue") return `Clue: ${entry.content}`;
+      return `Guess: ${entry.content} (${entry.result})`;
+    })
+    .join("\n");
+
+  const prompt = `As a Codenames AI player, analyze the team discussion:
+
+Current clue: "${clue.word}" (${clue.number})
+Available words: ${availableWords.join(", ")}
+
+Team Discussion:
+${recentDiscussion}
+
+Game History:
+${previousCluesAndResults}
+
+As ${model === "gpt-4o" ? "GPT-4" : model === "claude-3-5-sonnet-20241022" ? "Claude" : model === "grok-2-1212" ? "Grok" : model === "gemini-pro" ? "Gemini" : "Unknown"}, provide your perspective:
+1. Analyze the other team members' suggestions
+2. Consider their confidence levels
+3. State your opinion about the best word choice
+4. Express your confidence level (0-1)
+5. If you disagree with others, explain why
+
+Respond in JSON format: { "message": "your detailed analysis", "confidence": number }`;
+
+  switch (getAIService(model)) {
+    case "openai":
+      return await getOpenAIDiscussion(prompt);
+    case "anthropic":
+      return await getAnthropicDiscussion(prompt);
+    case "xai":
+      return await getXAIDiscussion(prompt);
+    case "google":
+      return await getGeminiDiscussion(prompt);
+    default:
+      throw new Error("Invalid AI model");
+  }
+}
+
+export async function makeConsensusVote(
+  model: AIModel,
+  team: "red" | "blue",
+  proposedWord: string,
+  teamDiscussion: TeamDiscussionEntry[],
+): Promise<{ approved: boolean; reason: string }> {
+  const recentDiscussion = teamDiscussion
+    .filter(entry => entry.team === team)
+    .map(entry => `${entry.player}: ${entry.message} (confidence: ${entry.confidence})`)
+    .join("\n");
+
+  const prompt = `As a Codenames AI player, decide whether to approve the proposed guess:
+
+Proposed word: ${proposedWord}
+
+Team Discussion:
+${recentDiscussion}
+
+Consider:
+1. Team consensus level
+2. Confidence scores
+3. Potential risks
+
+Respond in JSON format: { "approved": boolean, "reason": "explanation of your decision" }`;
+
+  switch (getAIService(model)) {
+    case "openai":
+      return await getOpenAIVote(prompt);
+    case "anthropic":
+      return await getAnthropicVote(prompt);
+    case "xai":
+      return await getXAIVote(prompt);
+    case "google":
+      return await getGeminiVote(prompt);
     default:
       throw new Error("Invalid AI model");
   }
@@ -450,11 +533,4 @@ async function getXAIVote(prompt: string): Promise<{ approved: boolean; reason: 
   }
 
   return JSON.parse(content) as { approved: boolean; reason: string };
-}
-
-function getAIService(model: AIModel): AIService {
-  if (model === "gpt-4o") return "openai";
-  if (model === "claude-3-5-sonnet-20241022") return "anthropic";
-  if (model === "grok-2-1212") return "xai";
-  throw new Error(`Invalid AI model: ${model}`);
 }
