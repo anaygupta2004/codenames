@@ -204,19 +204,27 @@ export default function GamePage() {
     }
   });
 
-  // Update handleAITurn for proper game logs and discussion
   const handleAITurn = async () => {
     try {
       if (aiTurnInProgress.current || !game) return;
-      aiTurnInProgress.current = true;
 
       const isRedTeam = game.currentTurn === "red_turn";
       const currentTeam = isRedTeam ? "red" : "blue";
       const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
       const currentTeamPlayers = isRedTeam ? game.redPlayers : game.bluePlayers;
 
-      // 1. Get clue from spymaster if needed
+      console.log('Starting AI turn for team:', currentTeam, 'with spymaster:', currentSpymaster);
+
+      if (!currentSpymaster || !VALID_MODELS.includes(currentSpymaster as AIModel)) {
+        console.error('Invalid spymaster configuration:', currentSpymaster);
+        return;
+      }
+
+      aiTurnInProgress.current = true;
+
+      // 1. Get clue from spymaster
       if (!lastClue) {
+        console.log('Getting clue from spymaster:', currentSpymaster);
         const clue = await getAIClue.mutateAsync();
         setLastClue(clue);
 
@@ -246,45 +254,53 @@ export default function GamePage() {
       setIsDiscussing(true);
       setDiscussionTimer(60);
 
+      // Get AI operatives excluding spymaster and human players
       const aiOperatives = currentTeamPlayers.filter(
-        player => typeof player === 'string' &&
-          player !== 'human' &&
-          player !== currentSpymaster
+        player => player !== 'human' && player !== currentSpymaster
       ) as AIModel[];
+
+      console.log('Starting discussion with AI operatives:', aiOperatives);
 
       // 3. Have all AI operatives discuss simultaneously
       const discussionPromises = aiOperatives.map(async (aiOperative) => {
-        const result = await discussMove.mutateAsync({
-          model: aiOperative,
-          team: currentTeam,
-          clue: lastClue
-        });
-
-        // Add AI discussion to game log
-        setGameLog(prev => [...prev, {
-          team: currentTeam,
-          action: result.message,
-          result: "pending",
-          player: aiOperative
-        }]);
-
-        // Broadcast discussion
-        if (socketRef.current?.readyState === WebSocket.OPEN) {
-          socketRef.current.send(JSON.stringify({
-            type: 'discussion',
-            content: result.message,
+        console.log(`${aiOperative} starting discussion...`);
+        try {
+          const result = await discussMove.mutateAsync({
+            model: aiOperative,
             team: currentTeam,
-            player: aiOperative,
-            confidence: result.confidence,
-            suggestedWord: result.suggestedWord,
-            timestamp: Date.now()
-          }));
-        }
+            clue: lastClue
+          });
 
-        return result;
+          // Add AI discussion to game log
+          setGameLog(prev => [...prev, {
+            team: currentTeam,
+            action: result.message,
+            result: "pending",
+            player: aiOperative
+          }]);
+
+          // Broadcast discussion
+          if (socketRef.current?.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              type: 'discussion',
+              content: result.message,
+              team: currentTeam,
+              player: aiOperative,
+              confidence: result.confidence,
+              suggestedWord: result.suggestedWord,
+              timestamp: Date.now()
+            }));
+          }
+
+          return result;
+        } catch (error) {
+          console.error(`Error in discussion for ${aiOperative}:`, error);
+          throw error;
+        }
       });
 
       const discussions = await Promise.all(discussionPromises);
+      console.log('Team discussions completed:', discussions);
 
       // 4. Find the most confident suggestion
       const bestSuggestion = discussions
@@ -292,6 +308,7 @@ export default function GamePage() {
         .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
 
       if (bestSuggestion?.suggestedWord) {
+        console.log('Best suggestion found:', bestSuggestion);
         // Add voting start to game log
         setGameLog(prev => [...prev, {
           team: currentTeam,
@@ -302,6 +319,7 @@ export default function GamePage() {
         // 5. All AI operatives vote on the best suggestion
         setVotingInProgress(true);
         const votePromises = aiOperatives.map(async aiOperative => {
+          console.log(`${aiOperative} voting on word:`, bestSuggestion.suggestedWord);
           const voteResult = await voteOnWord.mutateAsync({
             model: aiOperative,
             team: currentTeam,
@@ -321,6 +339,7 @@ export default function GamePage() {
 
         await Promise.all(votePromises);
       } else {
+        console.log('No confident suggestions found, ending turn');
         // Log no confident suggestions
         setGameLog(prev => [...prev, {
           team: currentTeam,
@@ -332,6 +351,11 @@ export default function GamePage() {
 
     } catch (error) {
       console.error("Error in AI turn:", error);
+      toast({
+        title: "Error during AI turn",
+        description: "An error occurred during the AI turn. Switching turns.",
+        variant: "destructive",
+      });
       aiTurnInProgress.current = false;
       setIsDiscussing(false);
       await switchTurns();
@@ -346,7 +370,8 @@ export default function GamePage() {
     const currentTeam = isRedTurn ? game.redPlayers : game.bluePlayers;
 
     // If it's AI's turn and not discussing yet, start the process
-    if (currentSpymaster && !isDiscussing && !lastClue) {
+    if (currentSpymaster && !currentTeam.includes('human') && !isDiscussing && !lastClue) {
+      console.log('Initiating AI turn for team:', isRedTurn ? 'red' : 'blue');
       handleAITurn();
     }
   }, [game?.currentTurn, isDiscussing, lastClue]);
@@ -609,12 +634,10 @@ export default function GamePage() {
       });
     }, 1000);
 
-
     return () => {
       if (gameTimerRef.current) clearInterval(gameTimerRef.current);
     };
   }, [game?.id]);
-
 
   const formatTime = (seconds: number): string => {
     const minutes = Math.floor(seconds / 60);
@@ -689,6 +712,9 @@ export default function GamePage() {
       </ScrollArea>
     );
   };
+
+  const VALID_MODELS = Object.keys(AI_MODEL_INFO) as AIModel[];
+
 
   return (
     <div className="min-h-screen bg-neutral-50 p-4">

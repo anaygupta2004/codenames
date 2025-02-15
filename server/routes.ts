@@ -16,24 +16,6 @@ function getRandomDelay(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Update the game history entry interfaces to match the schema
-interface ClueHistoryEntry extends GameHistoryEntry {
-  type: "clue";
-  content: string;
-  turn: "red" | "blue";
-  timestamp: number;
-}
-
-interface GuessHistoryEntry extends GameHistoryEntry {
-  type: "guess";
-  word: string;
-  relatedClue: string;
-  result: "correct" | "wrong" | "assassin";
-  turn: "red" | "blue";
-  timestamp: number;
-  content: string;
-}
-
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
 
@@ -41,7 +23,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const wss = new WebSocketServer({ 
     server: httpServer, 
     path: '/ws',
-    perMessageDeflate: false // Disable per-message deflate to reduce latency
+    perMessageDeflate: false
   });
 
   wss.on('connection', (ws: WebSocket) => {
@@ -62,8 +44,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.log(`Client joined game ${gameId}`);
         }
 
-        // Broadcast discussion updates to all connected clients
         if (data.type === 'discussion' && gameId) {
+          console.log('Broadcasting discussion:', data);
           const clients = gameDiscussions.get(gameId);
           if (clients) {
             const messageData = JSON.stringify({
@@ -141,6 +123,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const opposingTeamWords = isRedTurn ? game.blueTeam : game.redTeam;
       const currentSpymaster = isRedTurn ? game.redSpymaster : game.blueSpymaster;
 
+      console.log('AI Clue Request:', {
+        currentTurn: game.currentTurn,
+        spymaster: currentSpymaster,
+        teamWords: currentTeamWords
+      });
+
       if (!currentSpymaster || !VALID_MODELS.includes(currentSpymaster as AIModel)) {
         return res.status(400).json({ error: "Invalid spymaster configuration" });
       }
@@ -154,18 +142,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         game.gameHistory as GameHistoryEntry[]
       );
 
-      // Add clue to game history
-      const historyEntry: ClueHistoryEntry = {
+      console.log('Generated clue:', clue);
+
+      const historyEntry: GameHistoryEntry = {
         type: "clue",
         turn: isRedTurn ? "red" : "blue",
         content: `${clue.word} (${clue.number})`,
         timestamp: Date.now()
       };
 
-      const updatedHistory = [...(game.gameHistory || []), historyEntry];
-
-      const updatedGame = await storage.updateGame(game.id, {
-        gameHistory: updatedHistory
+      await storage.updateGame(game.id, {
+        gameHistory: [...(game.gameHistory || []), historyEntry]
       });
 
       res.json(clue);
@@ -292,6 +279,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!game) return res.status(404).json({ error: "Game not found" });
 
       const { model, team, clue } = req.body;
+      console.log('Discussion request:', { model, team, clue });
 
       if (!model || !team || !VALID_MODELS.includes(model as AIModel)) {
         return res.status(400).json({ error: "Invalid model or team" });
@@ -301,9 +289,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!currentTeamPlayers.includes(model)) {
         return res.status(400).json({ error: "AI model is not part of the team" });
       }
-
-      // Add a small random delay for natural discussion feel
-      await new Promise(resolve => setTimeout(resolve, getRandomDelay(500, 2000)));
 
       const discussion = await discussAndVote(
         model as AIModel,
@@ -315,6 +300,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         game.revealedCards
       );
 
+      console.log('Generated discussion:', discussion);
+
       const newDiscussionEntry: TeamDiscussionEntry = {
         team,
         player: model as AIModel,
@@ -324,9 +311,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         suggestedWord: discussion.suggestedWord
       };
 
-      const updatedDiscussion = [...(game.teamDiscussion || []), newDiscussionEntry];
-      const updatedGame = await storage.updateGame(game.id, {
-        teamDiscussion: updatedDiscussion
+      await storage.updateGame(game.id, {
+        teamDiscussion: [...(game.teamDiscussion || []), newDiscussionEntry]
       });
 
       res.json(newDiscussionEntry);
