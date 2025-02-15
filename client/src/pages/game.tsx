@@ -107,7 +107,7 @@ export default function GamePage() {
     mutationFn: async (word: string) => {
       if (!game) return;
       const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-      let result: "correct" | "wrong" | "assassin";
+      let result: "correct" | "wrong" | "assassin" = "wrong";
 
       if (game.redTeam.includes(word)) {
         result = currentTeam === "red" ? "correct" : "wrong";
@@ -115,20 +115,23 @@ export default function GamePage() {
         result = currentTeam === "blue" ? "correct" : "wrong";
       } else if (game.assassin === word) {
         result = "assassin";
-      } else {
-        result = "wrong";
       }
+
+      const currentPlayer = game.currentTurn === "red_turn" ? 
+        game.redSpymaster : game.blueSpymaster;
 
       setGameLog(prev => [...prev, {
         team: currentTeam,
         action: `guessed "${word}"`,
         result,
-        word
+        word,
+        player: currentPlayer as string
       }]);
 
       const res = await apiRequest("PATCH", `/api/games/${id}`, {
         revealedCards: [...(game?.revealedCards || []), word],
       });
+
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       return { data, result };
@@ -139,12 +142,11 @@ export default function GamePage() {
       setLastClue(null);
       setIsDiscussing(false);
 
-      // Reset timer when turn changes due to wrong guess
       if (result === "wrong" || result === "assassin") {
         setTimer(60);
       }
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast({
         title: "Error making guess",
         description: error.message,
@@ -226,47 +228,40 @@ export default function GamePage() {
 
     const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
     const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
-    const currentTeamDiscussions = teamDiscussion.filter(entry => entry.team === currentTeam);
+    const currentTeamDiscussions = teamDiscussion
+      .filter(entry => entry.team === currentTeam)
+      .filter(entry => entry.suggestedWord); // Only consider entries with suggestions
 
     if (currentTeamDiscussions.length === 0) {
-      // No discussions, switch turns
-      try {
-        await switchTurns();
-      } catch (error) {
-        console.error("Error switching turns:", error);
-      }
+      await switchTurns();
       return;
     }
 
-    // Find the option with highest confidence
-    const mostConfidentOption = currentTeamDiscussions.reduce((prev, current) => {
+    // Find the word with highest confidence across all discussions
+    const mostConfidentSuggestion = currentTeamDiscussions.reduce((prev, current) => {
       return (current.confidence > prev.confidence) ? current : prev;
-    }, currentTeamDiscussions[0]);
+    });
 
-    if (mostConfidentOption && mostConfidentOption.confidence > 0.6 && mostConfidentOption.suggestedWord) {
+    if (mostConfidentSuggestion && mostConfidentSuggestion.confidence > 0.6) {
       try {
         setVotingInProgress(true);
-        const voteResult = await voteOnWord.mutateAsync({
-          model: mostConfidentOption.player,
-          team: currentTeam,
-          word: mostConfidentOption.suggestedWord
-        });
+        const currentPlayers = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
+        const aiPlayers = currentPlayers.filter(player => 
+          typeof player === 'string' && player !== 'human'
+        ) as string[];
 
-        if (voteResult.allApproved) {
-          // Record the guess in game log before making it
-          const modelInfo = AI_MODEL_INFO[mostConfidentOption.player as keyof typeof AI_MODEL_INFO];
-          setGameLog(prev => [...prev, {
+        // Collect votes from all AI players
+        for (const aiPlayer of aiPlayers) {
+          await voteOnWord.mutateAsync({
+            model: aiPlayer,
             team: currentTeam,
-            action: `guesses "${mostConfidentOption.suggestedWord}"`,
-            result: "pending",
-            player: mostConfidentOption.player
-          }]);
-
-          // Make the actual guess
-          await makeGuess.mutateAsync(mostConfidentOption.suggestedWord);
-        } else {
-          await switchTurns();
+            word: mostConfidentSuggestion.suggestedWord
+          });
         }
+
+        // Make the guess with the most confident suggestion
+        await makeGuess.mutateAsync(mostConfidentSuggestion.suggestedWord);
+
       } catch (error) {
         console.error("Error in timeout voting:", error);
         await switchTurns();
@@ -274,7 +269,9 @@ export default function GamePage() {
     } else {
       await switchTurns();
     }
+
     setVotingInProgress(false);
+    setIsDiscussing(false);
   };
 
   const switchTurns = async () => {
@@ -302,9 +299,11 @@ export default function GamePage() {
     const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
     const teamColor = currentTeam === "red" ? "red" : "blue";
     const discussions = (game.teamDiscussion || []) as TeamDiscussionEntry[];
-    const recentDiscussion = discussions
+
+    // Sort discussions by timestamp in ascending order (oldest first)
+    const sortedDiscussions = discussions
       .filter(entry => entry.team === currentTeam)
-      .sort((a, b) => b.timestamp - a.timestamp);
+      .sort((a, b) => a.timestamp - b.timestamp);
 
     return (
       <Card className={`mt-4 border-${teamColor}-500 border-2`}>
@@ -315,11 +314,12 @@ export default function GamePage() {
             </h3>
             {isDiscussing && (
               <div className="flex items-center gap-2">
-                <div className={`text-sm font-medium ${
+                <Timer className="w-4 h-4" />
+                <span className={`text-sm font-medium ${
                   timer <= 10 ? 'text-red-500' : ''
                 }`}>
-                  Time remaining: {timer}s
-                </div>
+                  {timer}s
+                </span>
                 {votingInProgress && (
                   <span className="text-sm text-green-500">
                     Voting in progress...
@@ -331,8 +331,13 @@ export default function GamePage() {
 
           <ScrollArea className="h-[300px]">
             <div className="space-y-3">
-              {recentDiscussion.map((entry, index) => {
-                const { Icon, name } = getModelInfo(entry.player);
+              {sortedDiscussions.map((entry, index) => {
+                const modelInfo = AI_MODEL_INFO[entry.player as keyof typeof AI_MODEL_INFO] || {
+                  name: entry.player,
+                  Icon: Bot
+                };
+                const { Icon } = modelInfo;
+
                 return (
                   <div
                     key={index}
@@ -345,13 +350,18 @@ export default function GamePage() {
                     <div className="flex justify-between items-center mb-2">
                       <div className="flex items-center gap-2">
                         <Icon className="w-5 h-5" />
-                        <span className="font-medium">{name}</span>
+                        <span className="font-medium">{modelInfo.name}</span>
                       </div>
                       <span className="text-sm">
                         Confidence: {Math.round(entry.confidence * 100)}%
                       </span>
                     </div>
                     <p className="text-sm leading-relaxed">{entry.message}</p>
+                    {entry.suggestedWord && (
+                      <p className="text-sm mt-2 font-medium">
+                        Suggests: {entry.suggestedWord}
+                      </p>
+                    )}
                   </div>
                 );
               })}
