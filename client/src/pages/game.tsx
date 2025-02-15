@@ -23,7 +23,7 @@ const AI_MODEL_INFO = {
 type GameLogEntry = {
   team: string;
   action: string;
-  result: "correct" | "wrong" | "assassin";
+  result: "correct" | "wrong" | "assassin" | "pending";
   word?: string;
   player?: string;
 };
@@ -170,12 +170,12 @@ export default function GamePage() {
           const clue = await getAIClue.mutateAsync();
 
           if (clue && !game.gameState?.includes("win")) {
-            const { name } = getModelInfo(currentSpymaster.toString());
+            const modelInfo = AI_MODEL_INFO[currentSpymaster as keyof typeof AI_MODEL_INFO];
             setGameLog(prev => [...prev, {
               team: isRedTurn ? "red" : "blue",
-              action: `${name} gives clue: "${clue.word} (${clue.number})"`,
+              action: `gives clue: "${clue.word} (${clue.number})"`,
               result: "correct",
-              player: currentSpymaster.toString()
+              player: currentSpymaster
             }]);
 
             // Start team discussion
@@ -183,7 +183,7 @@ export default function GamePage() {
             setTimer(60);
 
             // Sequential team discussion
-            const aiPlayers = currentTeam.filter(player => player !== "human" && player !== currentSpymaster);
+            const aiPlayers = currentTeam.filter(player => typeof player === 'string' && player !== "human" && player !== currentSpymaster);
             for (const aiPlayer of aiPlayers) {
               await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
               await discussMove.mutateAsync({
@@ -253,7 +253,16 @@ export default function GamePage() {
         });
 
         if (voteResult.allApproved) {
-          // If vote is approved, make the guess
+          // Record the guess in game log before making it
+          const modelInfo = AI_MODEL_INFO[mostConfidentOption.player as keyof typeof AI_MODEL_INFO];
+          setGameLog(prev => [...prev, {
+            team: currentTeam,
+            action: `guesses "${mostConfidentOption.suggestedWord}"`,
+            result: "pending",
+            player: mostConfidentOption.player
+          }]);
+
+          // Make the actual guess
           await makeGuess.mutateAsync(mostConfidentOption.suggestedWord);
         } else {
           await switchTurns();
@@ -460,11 +469,12 @@ export default function GamePage() {
   const currentTeam = game.currentTurn === "red_turn" ? "Red" : "Blue";
   const isSpymasterAI = game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster;
 
-  const getLogEmoji = (result: "correct" | "wrong" | "assassin") => {
+  const getLogEmoji = (result: "correct" | "wrong" | "assassin" | "pending") => {
     switch (result) {
       case "correct": return <CheckCircle2 className="inline w-4 h-4 text-green-500" />;
       case "wrong": return <XCircle className="inline w-4 h-4 text-red-500" />;
       case "assassin": return "💀";
+      case "pending": return <Clock className="inline w-4 h-4 text-gray-500" />;
       default: return "";
     }
   };
