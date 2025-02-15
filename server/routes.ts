@@ -179,8 +179,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           timestamp: Date.now()
         };
 
-        const updatedHistory = [...(game.gameHistory || []), historyEntry];
-        updates.gameHistory = updatedHistory;
+        const currentHistory = game.gameHistory as GameHistoryEntry[];
+        updates.gameHistory = [...currentHistory, historyEntry];
 
         // Update turn if guess was incorrect or assassin was revealed
         if (result === "wrong" || result === "assassin") {

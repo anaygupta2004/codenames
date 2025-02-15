@@ -138,7 +138,7 @@ export default function GamePage() {
     }
   });
 
-  // Updated handleAITurn to properly manage discussion and voting
+  // Updated handleAITurn to manage faster discussions
   const handleAITurn = async () => {
     try {
       if (aiTurnInProgress.current || !game) return;
@@ -172,9 +172,9 @@ export default function GamePage() {
 
       if (!lastClue) return;
 
-      // 2. Start team discussion
+      // 2. Start team discussion with shorter timer
       setIsDiscussing(true);
-      setDiscussionTimer(20); // 20 seconds for discussion
+      setDiscussionTimer(60); // 60 seconds for discussion
 
       // Get AI operatives (excluding spymaster)
       const aiOperatives = currentTeamPlayers.filter(
@@ -183,13 +183,39 @@ export default function GamePage() {
           player !== currentSpymaster
       ) as AIModel[];
 
-      // 3. Have each AI operative discuss the clue
-      for (const aiOperative of aiOperatives) {
-        await discussMove.mutateAsync({
+      // 3. Have each AI operative discuss the clue with Promise.all for parallel execution
+      const discussionPromises = aiOperatives.map(aiOperative =>
+        discussMove.mutateAsync({
           model: aiOperative,
           team: currentTeam,
           clue: lastClue
-        });
+        })
+      );
+
+      await Promise.all(discussionPromises);
+
+      // 4. Immediately start voting process after discussions
+      const currentTeamDiscussion = game.teamDiscussion as TeamDiscussionEntry[];
+
+      // Find the most confident suggestion
+      const suggestions = currentTeamDiscussion
+        .filter(entry => entry.team === currentTeam && entry.suggestedWord)
+        .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+
+      if (suggestions.length > 0 && (suggestions[0].confidence || 0) > confidenceThreshold) {
+        // All AI operatives vote on the most confident suggestion
+        const votePromises = aiOperatives.map(aiOperative =>
+          voteOnWord.mutateAsync({
+            model: aiOperative,
+            team: currentTeam,
+            word: suggestions[0].suggestedWord!
+          })
+        );
+
+        await Promise.all(votePromises);
+      } else {
+        // If no confident suggestions, skip the turn
+        await switchTurns();
       }
     } catch (error) {
       console.error("Error in AI turn:", error);
@@ -231,7 +257,7 @@ export default function GamePage() {
     return () => clearInterval(interval);
   }, [game?.currentTurn]);
 
-  // Handle discussion timer
+  // Update effect for discussion timer to be more aggressive
   useEffect(() => {
     if (!isDiscussing) return;
 
@@ -246,7 +272,15 @@ export default function GamePage() {
       });
     }, 1000);
 
-    return () => clearInterval(interval);
+    // Force discussion to end after 20 seconds
+    const discussionTimeout = setTimeout(() => {
+      handleDiscussionTimeUp();
+    }, 20000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(discussionTimeout);
+    };
   }, [isDiscussing]);
 
   const handleTimeUp = async () => {
