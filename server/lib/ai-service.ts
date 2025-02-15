@@ -171,7 +171,13 @@ export async function getSpymasterClue(
     .map(entry => `${entry.content} (${entry.result})`)
     .join(", ");
 
-  const prompt = `As a Codenames spymaster, analyze these game elements:
+  const prompt = `As a Codenames spymaster, you must follow these strict rules:
+1. Give exactly ONE one-word clue and a number indicating how many words it relates to
+2. The clue cannot be any form/part/variation of the visible words
+3. Cannot use proper nouns, abbreviations, or made-up words
+4. Never reveal which specific words are your team's words
+5. Carefully avoid words that might lead to opponent or assassin words
+
 Board words: ${words.join(", ")}
 My team's words: ${teamWords.join(", ")}
 Opposing team's words: ${opposingWords.join(", ")}
@@ -181,15 +187,7 @@ Game History:
 Previous clues given: ${previousClues || "None"}
 Previous guesses made: ${previousGuesses || "None"}
 
-Give a one-word clue and a number indicating how many words it relates to.
-Consider previous clues and guesses to avoid repetition and learn from mistakes.
-Respond in JSON format: { "word": "clue", "number": count }
-The clue must follow Codenames rules:
-- Must be a single word
-- Cannot be any form of the visible words
-- Should connect multiple team words if possible
-- Avoid words that might lead to opponent or assassin words
-- Avoid words similar to previously failed clues`;
+Give your clue following these rules in JSON format: { "word": "clue", "number": count }`;
 
   switch (getAIService(validatedModel)) {
     case "openai":
@@ -222,20 +220,24 @@ export async function getGuesserMove(
     })
     .join("\n");
 
-  const prompt = `As a Codenames guesser, analyze:
-Available words: ${availableWords.join(", ")}
+  const prompt = `As a Codenames operative, follow these strict rules:
+1. You can only guess from unrevealed words
+2. You must consider the current clue carefully
+3. Avoid words that might be the assassin
+4. Learn from previous guesses and their results
+
+Available unrevealed words: ${availableWords.join(", ")}
 Current clue word: ${clue.word}
 Current clue number: ${clue.number}
+Already revealed words: ${revealedCards.join(", ")}
 
 Game History:
 ${previousCluesAndResults}
 
-Choose the word that best matches the clue, considering:
-1. Previous successful and failed guesses
-2. Pattern of clues given
-3. Words that remain unrevealed
+Choose one unrevealed word that best matches the clue.
+Respond in JSON format: { "guess": "chosen_word" }
 
-Respond in JSON format: { "guess": "chosen_word" }`;
+Note: Your guess must be one of the unrevealed available words!`;
 
   switch (getAIService(model)) {
     case "openai":

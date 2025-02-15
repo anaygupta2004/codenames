@@ -106,6 +106,17 @@ export default function GamePage() {
   const makeGuess = useMutation({
     mutationFn: async (word: string) => {
       if (!game) return;
+
+      // Prevent guessing already revealed words
+      if (game.revealedCards.includes(word)) {
+        toast({
+          title: "Invalid move",
+          description: "This word has already been revealed",
+          variant: "destructive",
+        });
+        return;
+      }
+
       const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
       let result: "correct" | "wrong" | "assassin" = "wrong";
 
@@ -118,7 +129,7 @@ export default function GamePage() {
       }
 
       const currentPlayer = game.currentTurn === "red_turn" ?
-        game.redSpymaster : game.blueSpymaster;
+        game.redPlayers[0] : game.bluePlayers[0];
 
       setGameLog(prev => [...prev, {
         team: currentTeam,
@@ -142,8 +153,9 @@ export default function GamePage() {
       setLastClue(null);
       setIsDiscussing(false);
 
+      // Always switch turns after a guess, unless it was correct
       if (result === "wrong" || result === "assassin") {
-        setTimer(60);
+        switchTurns();
       }
     },
     onError: (error: any) => {
@@ -159,47 +171,53 @@ export default function GamePage() {
 
   const handleAITurn = async () => {
     try {
+      if (aiTurnInProgress.current || !game) return;
       aiTurnInProgress.current = true;
-      const clue = await getAIClue.mutateAsync();
 
-      if (clue && !game?.gameState?.includes("win")) {
+      // Only get a clue if we don't have one for this turn
+      if (!lastClue) {
+        const clue = await getAIClue.mutateAsync();
+        setLastClue(clue);
+
         const isRedTeam = game.currentTurn === "red_turn";
         const currentTeam = isRedTeam ? "red" : "blue";
         const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
-        const modelInfo = AI_MODEL_INFO[currentSpymaster as keyof typeof AI_MODEL_INFO];
 
-        // Log the spymaster's clue
         setGameLog(prev => [...prev, {
           team: currentTeam,
           action: `gives clue: "${clue.word} (${clue.number})"`,
           result: "correct",
           player: currentSpymaster as string
         }]);
-
-        // Start team discussion with shorter timer
-        setIsDiscussing(true);
-        setTimer(20); // Reduced time for faster gameplay
-
-        // Get current team's AI players EXCLUDING the spymaster
-        const currentTeamPlayers = isRedTeam ? game.redPlayers : game.bluePlayers;
-        const aiOperatives = currentTeamPlayers.filter(
-          player => typeof player === 'string' &&
-          player !== 'human' &&
-          player !== (isRedTeam ? game.redSpymaster : game.blueSpymaster)
-        ) as string[];
-
-        // Run AI discussions in parallel for operatives only
-        await Promise.all(aiOperatives.map(async (aiPlayer) => {
-          await discussMove.mutateAsync({
-            model: aiPlayer,
-            team: currentTeam,
-            clue
-          });
-        }));
-
-        // Trigger immediate voting after discussions
-        handleTimeoutVoting();
       }
+
+      // Start team discussion
+      setIsDiscussing(true);
+      setTimer(20); // 20 seconds for discussion
+
+      const isRedTeam = game.currentTurn === "red_turn";
+      const currentTeam = isRedTeam ? "red" : "blue";
+      const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
+
+      // Get current team's AI operatives (excluding spymaster)
+      const currentTeamPlayers = isRedTeam ? game.redPlayers : game.bluePlayers;
+      const aiOperatives = currentTeamPlayers.filter(
+        player => typeof player === 'string' &&
+        player !== 'human' &&
+        player !== currentSpymaster
+      ) as string[];
+
+      // Run AI discussions in parallel for operatives only
+      await Promise.all(aiOperatives.map(async (aiPlayer) => {
+        await discussMove.mutateAsync({
+          model: aiPlayer,
+          team: currentTeam,
+          clue: lastClue!
+        });
+      }));
+
+      // Trigger voting after discussions
+      handleTimeoutVoting();
     } catch (error) {
       console.error("Error in AI turn:", error);
       aiTurnInProgress.current = false;
@@ -296,17 +314,24 @@ export default function GamePage() {
     setIsDiscussing(false);
   };
 
+
   const switchTurns = async () => {
     try {
       setIsDiscussing(false);
       const nextTurn = game?.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+
+      // Update the game state with the next turn
       await apiRequest("PATCH", `/api/games/${id}`, {
         currentTurn: nextTurn
       });
-      await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-      setTimer(30); // Reset timer for next turn
+
+      // Reset all turn-related state
+      setTimer(20);
       setLastClue(null);
       aiTurnInProgress.current = false;
+
+      // Refresh game data
+      await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
     } catch (error) {
       console.error("Error switching turns:", error);
       toast({

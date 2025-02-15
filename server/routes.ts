@@ -46,19 +46,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const currentTeamWords = isRedTurn ? game.redTeam : game.blueTeam;
       const opposingTeamWords = isRedTurn ? game.blueTeam : game.redTeam;
 
-      // Map the spymaster to a specific AI model
-      const spymasterModel: AIModel = isRedTurn ?
-        (typeof game.redSpymaster === 'string' ? game.redSpymaster as AIModel : "gpt-4o") :
-        (typeof game.blueSpymaster === 'string' ? game.blueSpymaster as AIModel : "gpt-4o");
+      // Only allow spymaster to give clues
+      const currentSpymaster = isRedTurn ? game.redSpymaster : game.blueSpymaster;
+      if (!currentSpymaster || typeof currentSpymaster !== 'string' || currentSpymaster === 'human') {
+        return res.status(400).json({ error: "Invalid spymaster configuration" });
+      }
 
       const clue = await getSpymasterClue(
-        spymasterModel,
+        currentSpymaster,
         game.words,
         currentTeamWords,
         opposingTeamWords,
         game.assassin,
         (game.gameHistory || []) as GameHistoryEntry[]
       );
+
+      // Add the clue to game history
+      const historyEntry: GameHistoryEntry = {
+        turn: isRedTurn ? "red" : "blue",
+        type: "clue",
+        content: `${clue.word} (${clue.number})`
+      };
+
+      await storage.updateGame(game.id, {
+        gameHistory: [...(game.gameHistory || []), historyEntry]
+      });
 
       res.json(clue);
     } catch (error: any) {
@@ -77,12 +89,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Invalid clue format" });
       }
 
-      // Map the current player to a specific AI model
-      const currentPlayer = game.currentTurn === "red_turn" ? game.redPlayers[0] : game.bluePlayers[0];
-      const playerModel: AIModel = typeof currentPlayer === 'string' ? currentPlayer as AIModel : "gpt-4o";
+      // Get current operative (not spymaster)
+      const currentTeamPlayers = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
+      const currentSpymaster = game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster;
+      const operatives = currentTeamPlayers.filter(player => player !== currentSpymaster);
+      const currentOperative = operatives[0];
+
+      if (!currentOperative || typeof currentOperative !== 'string' || currentOperative === 'human') {
+        return res.status(400).json({ error: "No valid AI operative found" });
+      }
 
       const guess = await getGuesserMove(
-        playerModel,
+        currentOperative as AIModel,
         game.words,
         clue,
         game.revealedCards,
