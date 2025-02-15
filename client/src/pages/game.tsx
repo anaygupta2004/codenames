@@ -9,14 +9,15 @@ import { useEffect, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { AlertCircle, CheckCircle2, XCircle, Clock, Timer, Bot } from "lucide-react";
-import { SiOpenai, SiAnthropic } from "react-icons/si";
+import { SiOpenai, SiAnthropic, SiGooglegemini } from "react-icons/si";
 import { storage } from "@/lib/storage";
 
 // Update AI model display info with correct icon components
 const AI_MODEL_INFO = {
   "gpt-4o": { name: "GPT-4", Icon: SiOpenai },
   "claude-3-5-sonnet-20241022": { name: "Claude", Icon: SiAnthropic },
-  "grok-2-1212": { name: "Grok", Icon: Bot }
+  "grok-2-1212": { name: "Grok", Icon: Bot },
+  "gemini-pro": { name: "Gemini", Icon: SiGooglegemini }
 };
 
 type GameLogEntry = {
@@ -242,12 +243,16 @@ export default function GamePage() {
           word: mostConfidentOption.suggestedWord || ''
         });
 
-        if (!result.allApproved) {
+        if (result.allApproved && lastClue) {
+          // If vote is approved, make the guess
+          await getAIGuess.mutateAsync(lastClue);
+        } else {
           // If vote wasn't approved, switch turns
           const res = await apiRequest("PATCH", `/api/games/${id}`, {
             currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
           });
           await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+          setTimer(60); // Reset timer for next turn
         }
       } catch (error) {
         console.error("Error in timeout voting:", error);
@@ -256,6 +261,7 @@ export default function GamePage() {
           currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
         });
         await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+        setTimer(60); // Reset timer for next turn
       }
     } else {
       // End discussion and switch turns if no confident options
