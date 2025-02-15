@@ -36,10 +36,7 @@ export default function GamePage() {
   const [timer, setTimer] = useState<number>(30);
   const [isDiscussing, setIsDiscussing] = useState(false);
   const timerRef = useRef<NodeJS.Timeout>();
-  const [gameTimeLeft, setGameTimeLeft] = useState<number>(1800); // 30 minutes
-  const [turnTimeLeft, setTurnTimeLeft] = useState<number>(180); // 3 minutes
-  const gameTimerRef = useRef<NodeJS.Timeout>();
-  const turnTimerRef = useRef<NodeJS.Timeout>();
+  const [lastClue, setLastClue] = useState<{ word: string; number: number } | null>(null);
 
   const { data: game, isLoading } = useQuery<Game>({
     queryKey: [`/api/games/${id}`],
@@ -50,6 +47,7 @@ export default function GamePage() {
       const res = await apiRequest("POST", `/api/games/${id}/ai/clue`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      setLastClue(data);
       return data;
     },
     onError: (error: Error) => {
@@ -62,26 +60,33 @@ export default function GamePage() {
     },
   });
 
-  const getAIGuess = useMutation({
-    mutationFn: async (clue: { word: string; number: number }) => {
-      const res = await apiRequest("POST", `/api/games/${id}/ai/guess`, { clue });
+  const discussMove = useMutation({
+    mutationFn: async (params: { model: string; team: "red" | "blue"; clue: any }) => {
+      const res = await apiRequest("POST", `/api/games/${id}/ai/discuss`, params);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       return data;
     },
-    onSuccess: async (data) => {
-      if (data.guess) {
-        await makeGuess.mutateAsync(data.guess);
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+    }
+  });
+
+  const voteOnWord = useMutation({
+    mutationFn: async (params: { model: string; team: "red" | "blue"; word: string }) => {
+      const res = await apiRequest("POST", `/api/games/${id}/ai/vote`, params);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+      if (data.allApproved) {
+        makeGuess.mutate(data.vote.word);
+        setIsDiscussing(false);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+        }
       }
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error getting AI guess",
-        description: error.message,
-        variant: "destructive",
-      });
-      aiTurnInProgress.current = false;
-    },
+    }
   });
 
   const makeGuess = useMutation({
@@ -117,109 +122,120 @@ export default function GamePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
       aiTurnInProgress.current = false;
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error making guess",
-        description: error.message,
-        variant: "destructive",
-      });
-      aiTurnInProgress.current = false;
-    },
-  });
-
-  const discussMove = useMutation({
-    mutationFn: async (params: { model: string; team: "red" | "blue"; clue: any }) => {
-      const res = await apiRequest("POST", `/api/games/${id}/ai/discuss`, params);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error in team discussion",
-        description: error.message,
-        variant: "destructive",
-      });
+      setLastClue(null);
     }
   });
 
-  const voteOnWord = useMutation({
-    mutationFn: async (params: { model: string; team: "red" | "blue"; word: string }) => {
-      const res = await apiRequest("POST", `/api/games/${id}/ai/vote`, params);
-      return res.json();
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-      if (data.allApproved) {
-        makeGuess.mutate(data.vote.word);
-        setIsDiscussing(false);
-        if (timerRef.current) {
-          clearInterval(timerRef.current);
-        }
-      }
-    }
-  });
+  useEffect(() => {
+    if (!game || game.gameState?.includes("win") || aiTurnInProgress.current) return;
 
-  const startDiscussion = async () => {
-    if (!game || !getAIClue.data) return;
+    const isRedTurn = game.currentTurn === "red_turn";
+    const currentSpymaster = isRedTurn ? game.redSpymaster : game.blueSpymaster;
+    const currentTeam = isRedTurn ? game.redPlayers : game.bluePlayers;
 
-    setIsDiscussing(true);
-    setTimer(30);
+    // If it's AI's turn and not discussing yet, start the process
+    if (currentSpymaster && !isDiscussing && !lastClue) {
+      const handleAITurn = async () => {
+        try {
+          aiTurnInProgress.current = true;
+          const clue = await getAIClue.mutateAsync();
 
-    const currentTeam = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
-    const aiPlayers = currentTeam.filter(player => player !== "human");
+          if (clue && !game.gameState?.includes("win")) {
+            const { name } = getModelInfo(currentSpymaster.toString());
+            setGameLog(prev => [...prev, {
+              team: isRedTurn ? "red" : "blue",
+              action: `${name} gives clue: "${clue.word} (${clue.number})"`,
+              result: "correct",
+              player: currentSpymaster.toString()
+            }]);
 
-    try {
-      // Start discussion timer
-      timerRef.current = setInterval(() => {
-        setTimer(prev => {
-          if (prev <= 1) {
-            setIsDiscussing(false);
-            clearInterval(timerRef.current);
-            return 0;
+            // Start team discussion
+            setIsDiscussing(true);
+            setTimer(30);
+
+            // Sequential team discussion
+            const aiPlayers = currentTeam.filter(player => player !== "human" && player !== currentSpymaster);
+            for (const aiPlayer of aiPlayers) {
+              await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+              await discussMove.mutateAsync({
+                model: aiPlayer,
+                team: isRedTurn ? "red" : "blue",
+                clue
+              });
+            }
           }
-          return prev - 1;
-        });
-      }, 1000);
-
-      // Sequential team discussion with random delays
-      for (const aiPlayer of aiPlayers) {
-        await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
-
-        if (!isDiscussing) break;
-
-        await discussMove.mutateAsync({
-          model: aiPlayer,
-          team: game.currentTurn === "red_turn" ? "red" : "blue",
-          clue: getAIClue.data
-        });
-      }
-
-      if (isDiscussing) {
-        const guessResult = await getAIGuess.mutateAsync(getAIClue.data);
-        if (guessResult?.guess) {
-          for (const aiPlayer of aiPlayers) {
-            if (!isDiscussing) break;
-            await voteOnWord.mutateAsync({
-              model: aiPlayer,
-              team: game.currentTurn === "red_turn" ? "red" : "blue",
-              word: guessResult.guess
-            });
-          }
+        } catch (error) {
+          console.error("Error in AI turn:", error);
+          aiTurnInProgress.current = false;
         }
-      }
-    } catch (error) {
-      console.error("Error in team discussion:", error);
-    } finally {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
-      setIsDiscussing(false);
+      };
+
+      handleAITurn();
     }
+  }, [game?.currentTurn, isDiscussing, lastClue]);
+
+  const renderTeamDiscussion = () => {
+    if (!game) return null;
+
+    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    const teamColor = currentTeam === "red" ? "red" : "blue";
+    const discussions = (game.teamDiscussion || []) as TeamDiscussionEntry[];
+    const recentDiscussion = discussions
+      .filter(entry => entry.team === currentTeam)
+      .sort((a, b) => b.timestamp - a.timestamp);
+
+    return (
+      <Card className={`mt-4 border-${teamColor}-500 border-2`}>
+        <CardContent className="p-4">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className={`font-bold text-lg text-${teamColor}-700`}>
+              {currentTeam === "red" ? "Red" : "Blue"} Team Discussion
+            </h3>
+            {isDiscussing && (
+              <div className="text-sm font-medium">
+                Time remaining: {timer}s
+              </div>
+            )}
+          </div>
+
+          <ScrollArea className="h-[300px]">
+            <div className="space-y-3">
+              {recentDiscussion.map((entry, index) => {
+                const { Icon, name } = getModelInfo(entry.player);
+                return (
+                  <div
+                    key={index}
+                    className={`p-4 rounded-lg ${
+                      entry.team === "red" 
+                        ? "bg-red-50 text-red-900 border-red-200" 
+                        : "bg-blue-50 text-blue-900 border-blue-200"
+                    } border`}
+                  >
+                    <div className="flex justify-between items-center mb-2">
+                      <div className="flex items-center gap-2">
+                        <Icon className="w-5 h-5" />
+                        <span className="font-medium">{name}</span>
+                      </div>
+                      <span className="text-sm">
+                        Confidence: {Math.round(entry.confidence * 100)}%
+                      </span>
+                    </div>
+                    <p className="text-sm leading-relaxed">{entry.message}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
+        </CardContent>
+      </Card>
+    );
+  };
+
+  const getModelInfo = (model: string) => {
+    return AI_MODEL_INFO[model as keyof typeof AI_MODEL_INFO] || { 
+      name: model, 
+      Icon: AlertCircle 
+    };
   };
 
   useEffect(() => {
@@ -230,46 +246,33 @@ export default function GamePage() {
     };
   }, []);
 
-  const getModelInfo = (model: string) => {
-    return AI_MODEL_INFO[model as keyof typeof AI_MODEL_INFO] || { 
-      name: model, 
-      Icon: AlertCircle 
-    };
-  };
-
-  useEffect(() => {
-    if (!game || game.gameState?.includes("win") || aiTurnInProgress.current || isDiscussing) return;
-
-    const isRedTurn = game.currentTurn === "red_turn";
-    const currentSpymasterIsAI = isRedTurn ? game.redSpymaster : game.blueSpymaster;
-    const currentTeamPlayers = isRedTurn ? game.redPlayers : game.bluePlayers;
-
-    const handleAITurn = async () => {
-      if (!currentSpymasterIsAI || aiTurnInProgress.current) return;
-
-      try {
-        aiTurnInProgress.current = true;
-        const clue = await getAIClue.mutateAsync();
-        if (clue && !game.gameState?.includes("win")) {
-          const { name } = getModelInfo(currentSpymasterIsAI.toString());
-          setGameLog(prev => [...prev, {
-            team: isRedTurn ? "red" : "blue",
-            action: `${name} gives clue: "${clue.word} (${clue.number})"`,
-            result: "correct",
-            player: currentSpymasterIsAI.toString()
-          }]);
-
-          // Automatically start discussion after clue is given
-          await startDiscussion();
-        }
-      } catch (error) {
-        console.error("Error in AI turn:", error);
-        aiTurnInProgress.current = false;
+  const getAIGuess = useMutation({
+    mutationFn: async (clue: { word: string; number: number }) => {
+      const res = await apiRequest("POST", `/api/games/${id}/ai/guess`, { clue });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      return data;
+    },
+    onSuccess: async (data) => {
+      if (data.guess) {
+        await makeGuess.mutateAsync(data.guess);
       }
-    };
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error getting AI guess",
+        description: error.message,
+        variant: "destructive",
+      });
+      aiTurnInProgress.current = false;
+    },
+  });
 
-    handleAITurn();
-  }, [game?.currentTurn, game?.gameState]);
+
+  const [gameTimeLeft, setGameTimeLeft] = useState<number>(1800); // 30 minutes
+  const [turnTimeLeft, setTurnTimeLeft] = useState<number>(180); // 3 minutes
+  const gameTimerRef = useRef<NodeJS.Timeout>();
+  const turnTimerRef = useRef<NodeJS.Timeout>();
 
   useEffect(() => {
     if (!game) return;
@@ -344,57 +347,6 @@ export default function GamePage() {
     }
   };
 
-  const renderAIDiscussion = () => {
-    if (!game) return null;
-
-    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-    const discussions = game.teamDiscussion || [];
-    const recentDiscussion = (discussions as TeamDiscussionEntry[])
-      .filter(entry => entry.team === currentTeam)
-      .sort((a, b) => b.timestamp - a.timestamp);
-
-    return (
-      <Card className="mt-4">
-        <CardContent className="p-4">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-bold text-lg">{currentTeam === "red" ? "Red" : "Blue"} Team Discussion</h3>
-            {isDiscussing && (
-              <div className="text-sm font-medium">
-                Time remaining: {timer}s
-              </div>
-            )}
-          </div>
-
-          <ScrollArea className="h-[200px]">
-            <div className="space-y-2">
-              {recentDiscussion.map((entry, index) => {
-                const { Icon, name } = getModelInfo(entry.player);
-                return (
-                  <div
-                    key={index}
-                    className={`p-3 rounded-lg ${
-                      entry.team === "red" ? "bg-red-50 text-red-900" : "bg-blue-50 text-blue-900"
-                    }`}
-                  >
-                    <div className="flex justify-between items-center mb-1">
-                      <div className="flex items-center gap-2">
-                        <Icon className="w-4 h-4" />
-                        <span className="font-medium">{name}</span>
-                      </div>
-                      <span className="text-sm text-gray-500">
-                        Confidence: {Math.round(entry.confidence * 100)}%
-                      </span>
-                    </div>
-                    <p className="text-sm">{entry.message}</p>
-                  </div>
-                );
-              })}
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
-    );
-  };
 
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
@@ -452,7 +404,7 @@ export default function GamePage() {
         </div>
 
         <div className="lg:col-span-4 space-y-4">
-          {renderAIDiscussion()}
+          {renderTeamDiscussion()}
           <Card>
             <CardContent className="p-4">
               <h3 className="font-bold text-lg mb-4">Game Log</h3>
