@@ -18,7 +18,9 @@ const AI_MODEL_INFO = {
   "claude-3-5-sonnet-20241022": { name: "Claude", Icon: SiAnthropic },
   "grok-2-1212": { name: "Grok", Icon: Bot },
   "gemini-pro": { name: "Gemini", Icon: SiGooglegemini }
-};
+} as const;
+
+type AIModel = keyof typeof AI_MODEL_INFO;
 
 type GameLogEntry = {
   team: string;
@@ -69,7 +71,7 @@ export default function GamePage() {
   });
 
   const discussMove = useMutation({
-    mutationFn: async (params: { model: string; team: "red" | "blue"; clue: any }) => {
+    mutationFn: async (params: { model: AIModel; team: "red" | "blue"; clue: any }) => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/discuss`, params);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -92,7 +94,7 @@ export default function GamePage() {
   });
 
   const voteOnWord = useMutation({
-    mutationFn: async (params: { model: string; team: "red" | "blue"; word: string }) => {
+    mutationFn: async (params: { model: AIModel; team: "red" | "blue"; word: string }) => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/vote`, params);
       return res.json();
     },
@@ -221,7 +223,7 @@ export default function GamePage() {
         player => typeof player === 'string' &&
         player !== 'human' &&
         player !== currentSpymaster
-      ) as string[];
+      ) as AIModel[];
 
       // Run AI discussions in parallel for operatives only
       if (lastClue) {
@@ -307,7 +309,7 @@ export default function GamePage() {
           typeof player === 'string' &&
           player !== 'human' &&
           player !== (game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster)
-        ) as string[];
+        ) as AIModel[];
 
         // Collect votes from all AI operatives
         for (const aiOperative of aiOperatives) {
@@ -400,7 +402,7 @@ export default function GamePage() {
           <ScrollArea className="h-[300px]">
             <div className="space-y-3">
               {sortedDiscussions.map((entry, index) => {
-                const modelInfo = AI_MODEL_INFO[entry.player as keyof typeof AI_MODEL_INFO] || {
+                const modelInfo = AI_MODEL_INFO[entry.player as AIModel] || {
                   name: entry.player,
                   Icon: Bot
                 };
@@ -441,8 +443,8 @@ export default function GamePage() {
     );
   };
 
-  const getModelInfo = (model: string) => {
-    return AI_MODEL_INFO[model as keyof typeof AI_MODEL_INFO] || {
+  const getModelInfo = (model: AIModel) => {
+    return AI_MODEL_INFO[model] || {
       name: model,
       Icon: AlertCircle
     };
@@ -550,7 +552,7 @@ export default function GamePage() {
       <ScrollArea className="h-[200px]">
         <div className="space-y-2">
           {gameLog.map((log, index) => {
-            const modelInfo = log.player ? AI_MODEL_INFO[log.player as keyof typeof AI_MODEL_INFO] : null;
+            const modelInfo = log.player ? AI_MODEL_INFO[log.player as AIModel] : null;
             const Icon = modelInfo?.Icon;
             const displayName = modelInfo?.name || log.team;
 

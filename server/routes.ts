@@ -50,8 +50,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const currentSpymaster = isRedTurn ? game.redSpymaster : game.blueSpymaster;
 
       // Check if currentSpymaster is a valid AI model
-      const validAIModels = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"];
-      if (!currentSpymaster || !validAIModels.includes(currentSpymaster as string)) {
+      const validAIModels = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"] as const;
+      if (!currentSpymaster || !validAIModels.includes(currentSpymaster as AIModel)) {
         return res.status(400).json({ error: "Invalid spymaster configuration" });
       }
 
@@ -61,14 +61,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         currentTeamWords,
         opposingTeamWords,
         game.assassin,
-        (game.gameHistory || []) as GameHistoryEntry[]
+        game.gameHistory || []
       );
 
       // Add the clue to game history
       const historyEntry: GameHistoryEntry = {
         turn: isRedTurn ? "red" : "blue",
         type: "clue",
-        content: `${clue.word} (${clue.number})`
+        content: `${clue.word} (${clue.number})`,
+        timestamp: Date.now()
       };
 
       await storage.updateGame(game.id, {
