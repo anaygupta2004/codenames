@@ -45,12 +45,6 @@ const AIOptions = [
     description: "xAI's newest model"
   },
   {
-    value: "llama-7b",
-    label: "LLama 7B",
-    icon: <SiMeta className="text-[#0668E1]" />,
-    description: "Meta's open source model"
-  },
-  {
     value: "gemini-pro",
     label: "Gemini Pro",
     icon: <SiGooglegemini className="text-[#4285f4]" />,
