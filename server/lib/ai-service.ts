@@ -34,10 +34,22 @@ async function getGeminiClue(prompt: string): Promise<{ word: string; number: nu
   const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
     const response = result.response;
     const text = response.text();
-    return JSON.parse(text) as { word: string; number: number };
+
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed.word || typeof parsed.number !== 'number') {
+        throw new Error("Invalid response format");
+      }
+      return parsed;
+    } catch (error) {
+      console.error("Error parsing Gemini response:", error);
+      throw new Error("Failed to parse Gemini response");
+    }
   } catch (error) {
     console.error("Error in Gemini clue generation:", error);
     throw new Error("Failed to generate clue with Gemini");
@@ -48,10 +60,22 @@ async function getGeminiGuess(prompt: string): Promise<{ guess: string }> {
   const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
     const response = result.response;
-    const text = response.text();
-    return JSON.parse(text) as { guess: string };
+    const text = response.text().trim();
+
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed.guess || typeof parsed.guess !== 'string') {
+        throw new Error("Invalid response format");
+      }
+      return parsed;
+    } catch (error) {
+      console.error("Error parsing Gemini guess response:", error);
+      throw new Error("Failed to parse Gemini guess response");
+    }
   } catch (error) {
     console.error("Error in Gemini guess generation:", error);
     throw new Error("Failed to generate guess with Gemini");
@@ -62,14 +86,33 @@ async function getGeminiDiscussion(prompt: string): Promise<{ message: string; c
   const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
     const response = result.response;
-    const text = response.text();
-    return JSON.parse(text) as { message: string; confidence: number; suggestedWord?: string };
+    const text = response.text().trim();
+
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed.message || typeof parsed.confidence !== 'number') {
+        throw new Error("Invalid response format");
+      }
+      return {
+        message: parsed.message,
+        confidence: Math.max(0, Math.min(1, parsed.confidence)),
+        suggestedWord: parsed.suggestedWord
+      };
+    } catch (error) {
+      console.error("Error parsing Gemini discussion response:", error);
+      return {
+        message: "I encountered an error processing the response. Let's proceed with the team's consensus.",
+        confidence: 0.5
+      };
+    }
   } catch (error) {
     console.error("Error in Gemini discussion:", error);
     return {
-      message: "I encountered an error processing the response. Let's continue our discussion.",
+      message: "I encountered a technical issue. Let's continue our discussion based on the team's input.",
       confidence: 0.5
     };
   }
@@ -79,15 +122,30 @@ async function getGeminiVote(prompt: string): Promise<{ approved: boolean; reaso
   const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
     const response = result.response;
-    const text = response.text();
-    return JSON.parse(text) as { approved: boolean; reason: string };
+    const text = response.text().trim();
+
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed.approved !== 'boolean' || typeof parsed.reason !== 'string') {
+        throw new Error("Invalid response format");
+      }
+      return parsed;
+    } catch (error) {
+      console.error("Error parsing Gemini vote response:", error);
+      return {
+        approved: false,
+        reason: "Due to technical issues, I'm abstaining from this vote."
+      };
+    }
   } catch (error) {
     console.error("Error in Gemini vote:", error);
     return {
       approved: false,
-      reason: "Could not process the voting decision due to an error."
+      reason: "Unable to process voting decision due to technical issues."
     };
   }
 }

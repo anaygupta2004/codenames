@@ -8,11 +8,11 @@ import type { AIModel, PlayerType } from "@shared/schema";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { 
-  SiGooglegemini, 
   SiOpenai, 
   SiMeta, 
   SiAnthropic,
-  SiX 
+  SiX,
+  SiGooglegemini 
 } from 'react-icons/si';
 
 type TeamConfig = {
@@ -47,7 +47,7 @@ const AIOptions = [
   {
     value: "gemini-pro",
     label: "Gemini Pro",
-    icon: <SiGooglegemini className="text-[#4285f4]" />,
+    icon: <SiGooglegemini className="w-5 h-5 text-[#4285f4]" />,
     description: "Google's most capable model"
   }
 ];
