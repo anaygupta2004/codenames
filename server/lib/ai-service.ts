@@ -267,7 +267,9 @@ export async function discussAndVote(
   }
 
   const availableWords = words.filter(word => !revealedCards.includes(word));
-  const recentDiscussion = teamDiscussion
+
+  // Filter discussions to only include current team's discussion
+  const recentTeamDiscussion = teamDiscussion
     .filter(entry => entry.team === team)
     .sort((a, b) => b.timestamp - a.timestamp)
     .map(entry => {
@@ -278,32 +280,41 @@ export async function discussAndVote(
     })
     .join("\n");
 
-  const previousCluesAndResults = gameHistory
-    .filter(entry => entry.type === "clue" || entry.type === "guess")
+  // Extract relevant game history for informed decisions
+  const relevantHistory = gameHistory
+    .filter(entry => {
+      // Include all clues for context
+      if (entry.type === "clue") return true;
+      // For guesses, only include the team's own guesses and their results
+      if (entry.type === "guess") return entry.turn === team;
+      return false;
+    })
     .map(entry => {
       if (entry.type === "clue") return `Clue: ${entry.content}`;
-      return `Guess: ${entry.content} (${entry.result})`;
+      return `Our guess: ${entry.content} (${entry.result})`;
     })
     .join("\n");
 
-  const prompt = `As a Codenames AI player, analyze the team discussion:
+  const prompt = `As a Codenames AI player on the ${team} team, analyze the situation:
 
-Current clue: "${clue.word}" (${clue.number})
-Available words: ${availableWords.join(", ")}
+Current Game State:
+- Current clue: "${clue.word}" (${clue.number})
+- Available unrevealed words: ${availableWords.join(", ")}
+- Words we've revealed: ${revealedCards.filter(word => gameHistory.some(h => h.turn === team && h.content === word)).join(", ")}
 
-Team Discussion:
-${recentDiscussion}
+Your Team's Discussion:
+${recentTeamDiscussion}
 
-Game History:
-${previousCluesAndResults}
+Your Team's History:
+${relevantHistory}
 
-As ${getModelDisplayName(model)}, provide your perspective:
-1. Analyze the other team members' suggestions
-2. Consider their confidence levels
-3. If you see a strong suggestion, express support
-4. If you have a different idea, explain why
+As ${getModelDisplayName(model)}, carefully consider:
+1. The current clue and how it relates to unrevealed words
+2. Your teammates' suggestions and their confidence levels
+3. Previous successful and unsuccessful guesses by your team
+4. Avoid words that have already been revealed
 5. Express your confidence level (0-1)
-6. Suggest a word if you're confident (>0.7)
+6. Suggest a word only if you're confident (>0.7)
 
 Respond in JSON format: { 
   "message": "your detailed analysis",
