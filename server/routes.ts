@@ -12,10 +12,12 @@ function getRandomDelay(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Add type for clue tracking in game history
+// Update the game history entry interfaces to match the schema
 interface ClueHistoryEntry extends GameHistoryEntry {
   type: "clue";
   content: string;
+  turn: "red" | "blue";
+  timestamp: number;
 }
 
 interface GuessHistoryEntry extends GameHistoryEntry {
@@ -23,6 +25,9 @@ interface GuessHistoryEntry extends GameHistoryEntry {
   word: string;
   relatedClue: string;
   result: "correct" | "wrong" | "assassin";
+  turn: "red" | "blue";
+  timestamp: number;
+  content: string;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -71,7 +76,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         currentTeamWords,
         opposingTeamWords,
         game.assassin,
-        (game.gameHistory as GameHistoryEntry[]) || []
+        game.gameHistory as GameHistoryEntry[]
       );
 
       // Add clue to game history
@@ -82,8 +87,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         timestamp: Date.now()
       };
 
+      const updatedHistory = [...(game.gameHistory || []), historyEntry];
+
       const updatedGame = await storage.updateGame(game.id, {
-        gameHistory: [...(game.gameHistory || []), historyEntry]
+        gameHistory: updatedHistory
       });
 
       res.json(clue);
@@ -134,18 +141,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
 
         // Get the last clue from history
-        const lastClue = [...(game.gameHistory as GameHistoryEntry[])]
+        const gameHistory = game.gameHistory as GameHistoryEntry[];
+        const lastClue = [...gameHistory]
           .reverse()
-          .find(entry => entry.type === "clue") as ClueHistoryEntry;
+          .find(entry => entry.type === "clue") as ClueHistoryEntry | undefined;
 
-        // Update scores
+        // Update scores and handle game state changes
         if (game.redTeam.includes(newCard)) {
           updates.redScore = (game.redScore || 0) + 1;
         } else if (game.blueTeam.includes(newCard)) {
           updates.blueScore = (game.blueScore || 0) + 1;
         }
 
-        // Determine guess result
         let result: "correct" | "wrong" | "assassin";
         if (newCard === game.assassin) {
           result = "assassin";
@@ -161,17 +168,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         updates.revealedCards = req.body.revealedCards;
 
-        // Add to game history
+        // Add guess to game history
         const historyEntry: GuessHistoryEntry = {
           type: "guess",
           turn: currentTeam,
           word: newCard,
           relatedClue: lastClue ? lastClue.content : "",
           result,
+          content: `Guessed: ${newCard}`,
           timestamp: Date.now()
         };
 
-        updates.gameHistory = [...(game.gameHistory || []), historyEntry];
+        const updatedHistory = [...(game.gameHistory || []), historyEntry];
+        updates.gameHistory = updatedHistory;
 
         // Update turn if guess was incorrect or assassin was revealed
         if (result === "wrong" || result === "assassin") {
@@ -186,7 +195,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // If updating current turn directly
+      // Handle turn changes
       if (req.body.currentTurn) {
         updates.currentTurn = req.body.currentTurn;
         // Clear team discussion when turn changes
@@ -213,10 +222,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Invalid model or team" });
       }
 
-      if (!clue || typeof clue.word !== 'string' || typeof clue.number !== 'number') {
-        return res.status(400).json({ error: "Invalid clue format" });
-      }
-
       const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
       if (!currentTeamPlayers.includes(model)) {
         return res.status(400).json({ error: "AI model is not part of the team" });
@@ -230,8 +235,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         team,
         game.words,
         clue,
-        (game.teamDiscussion as TeamDiscussionEntry[]) || [],
-        (game.gameHistory as GameHistoryEntry[]) || [],
+        game.teamDiscussion as TeamDiscussionEntry[],
+        game.gameHistory as GameHistoryEntry[],
         game.revealedCards
       );
 
@@ -244,8 +249,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         suggestedWord: discussion.suggestedWord
       };
 
+      const updatedDiscussion = [...(game.teamDiscussion || []), newDiscussionEntry];
       const updatedGame = await storage.updateGame(game.id, {
-        teamDiscussion: [...(game.teamDiscussion || []), newDiscussionEntry]
+        teamDiscussion: updatedDiscussion
       });
 
       res.json(newDiscussionEntry);

@@ -178,11 +178,11 @@ export async function getSpymasterClue(
 
   // Filter active clues (clues with remaining unguessed words)
   const activeClues = gameHistory
-    .filter(entry => entry.type === "clue")
+    .filter(entry => entry.type === "clue" && entry.content)
     .map(clueEntry => {
       const relatedGuesses = gameHistory
         .filter(g => g.type === "guess" && g.relatedClue === clueEntry.content);
-      const guessedWords = new Set(relatedGuesses.map(g => g.word));
+      const guessedWords = new Set(relatedGuesses.map(g => g.word || ''));
       const remainingWords = teamWords.filter(w => !guessedWords.has(w));
       return {
         clue: clueEntry.content,
@@ -193,7 +193,7 @@ export async function getSpymasterClue(
 
   const prompt = `${GAME_RULES}
 
-As the ${model === "red_spymaster" ? "Red" : "Blue"} team's spymaster, analyze the game state:
+As the spymaster, analyze the game state:
 
 Board Configuration:
 - Your team's remaining words: ${teamWords.join(", ")}
@@ -205,15 +205,14 @@ Game State:
 - Active clues with unguessed words: ${activeClues.length > 0
     ? activeClues.map(c => `"${c.clue}" (${c.remainingWords.length} words remaining)`).join(", ")
     : "None"}
-- Previous guesses and results: ${gameHistory
-    .filter(entry => entry.type === "guess")
-    .map(entry => `${entry.word} (${entry.result})`).join(", ")}
 
 Strategic Objectives:
-1. Create efficient clues linking multiple words when possible
-2. Avoid clues that could lead to opponent words or assassin
-3. Consider the current game state and which team is ahead
-4. Try to build on previous successful clues if applicable
+1. Prioritize clues that connect multiple words efficiently
+2. Consider word relationships and semantic connections
+3. Avoid clues that could lead to opponent words or assassin
+4. Balance risk vs reward based on game state
+5. Build on previous successful clue patterns
+6. Consider the current score and adjust strategy accordingly
 
 Provide your clue in JSON format: { "word": "clue", "number": count }`;
 
@@ -307,16 +306,16 @@ export async function discussAndVote(
   gameHistory: GameHistoryEntry[],
   revealedCards: string[]
 ): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
-  if (!clue || !clue.word || typeof clue.number !== 'number') {
+  if (!clue) {
     throw new Error("Invalid clue format provided to discussAndVote");
   }
 
   const availableWords = words.filter(word => !revealedCards.includes(word));
   const teamHistory = gameHistory.filter(entry => entry.turn === team);
 
-  // Track clue success rates
+  // Track clue success rates for better decision making
   const cluePerformance = teamHistory
-    .filter(entry => entry.type === "clue")
+    .filter(entry => entry.type === "clue" && entry.content)
     .map(clueEntry => {
       const relatedGuesses = teamHistory
         .filter(g => g.type === "guess" && g.relatedClue === clueEntry.content);
@@ -324,17 +323,17 @@ export async function discussAndVote(
       return {
         clue: clueEntry.content,
         successRate: isNaN(successRate) ? 0 : successRate,
-        guesses: relatedGuesses.map(g => `${g.word} (${g.result})`)
+        guesses: relatedGuesses.map(g => `${g.word || ''} (${g.result})`)
       };
     });
 
-  // Sort discussions by timestamp to show the conversation flow
-  const recentTeamDiscussion = teamDiscussion
+  // Sort discussions by timestamp for conversation flow
+  const recentDiscussion = teamDiscussion
     .filter(entry => entry.team === team)
-    .sort((a, b) => b.timestamp - a.timestamp)
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
     .map(entry => {
-      const modelInfo = getModelInfo(entry.player as AIModel);
-      return `${modelInfo.name} (${modelInfo.service}): ${entry.message} ${
+      const modelInfo = entry.player ? getModelInfo(entry.player as AIModel) : null;
+      return `${modelInfo?.name || 'Unknown'}: ${entry.message} ${
         entry.suggestedWord ? `[Suggests: ${entry.suggestedWord}]` : ''
       } (confidence: ${entry.confidence})`;
     })
@@ -350,18 +349,21 @@ Available Words: ${availableWords.join(", ")}
 Team Performance:
 ${cluePerformance.map(c =>
     `Clue "${c.clue}": Success rate ${(c.successRate * 100).toFixed(1)}%
-   Guesses: ${c.guesses.join(", ")}`
+     Guesses: ${c.guesses.join(", ")}`
   ).join("\n")}
 
 Recent Team Discussion:
-${recentTeamDiscussion}
+${recentDiscussion}
 
-As ${getModelDisplayName(model)}, contribute to the team discussion:
-1. Analyze previous guesses and their results
+As ${getModelDisplayName(model)}, analyze and contribute:
+1. Review previous guesses and their outcomes
 2. Consider teammates' suggestions and confidence levels
-3. Evaluate the risk/reward of available words
-4. Share strategic insights about the current clue
-5. If highly confident (>0.7), suggest a specific word
+3. Evaluate word connections to the clue
+4. Consider both semantic and strategic relationships
+5. Suggest words with confidence levels:
+   - High (>0.8): Strong connection, minimal risk
+   - Medium (0.6-0.8): Possible connection, some risk
+   - Low (<0.6): Save for later or skip
 
 Respond in JSON format: {
   "message": "your analysis and strategic thoughts",
@@ -448,8 +450,8 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
     max_tokens: 1024,
     messages: [
       { 
-        role: 'system', 
-        content: 'You are a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing "word" and "number" fields. Never include explanations outside of the JSON.' 
+        role: 'assistant', 
+        content: 'I am a Codenames AI assistant that only responds with valid JSON objects containing "word" and "number" fields.' 
       },
       { 
         role: 'user', 
@@ -464,7 +466,6 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
 
   try {
     const content = response.content[0].text.trim();
-    // If response starts with explanation text, try to extract JSON
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error("No valid JSON found in response");
@@ -528,7 +529,7 @@ async function getAnthropicGuess(prompt: string): Promise<{ guess: string }> {
     max_tokens: 1024,
     messages: [
       { 
-        role: 'system', 
+        role: 'assistant', 
         content: 'You are a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing a "guess" field. Never include explanations outside of the JSON.' 
       },
       { 
@@ -603,8 +604,8 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
     max_tokens: 1024,
     messages: [
       { 
-        role: 'system', 
-        content: 'You are a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing "message" and "confidence" fields, and optionally a "suggestedWord" field. Never include explanations outside of the JSON.' 
+        role: 'assistant', 
+        content: 'I am a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing "message" and "confidence" fields, and optionally a "suggestedWord" field. Never include explanations outside of the JSON.' 
       },
       { 
         role: 'user', 
@@ -687,7 +688,7 @@ async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; re
     max_tokens: 1024,
     messages: [
       { 
-        role: 'system', 
+        role: 'assistant', 
         content: 'You are a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing "approved" and "reason" fields. Never include explanations outside of the JSON.' 
       },
       { 
