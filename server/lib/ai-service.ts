@@ -151,6 +151,21 @@ async function getGeminiVote(prompt: string): Promise<{ approved: boolean; reaso
 }
 
 // Update the main functions to include Gemini
+const GAME_RULES = `
+Codenames Rules:
+1. The board has 25 words - some belong to red team, some to blue team, some are neutral, and one is the assassin
+2. Each team's spymaster knows which words belong to which team
+3. The spymaster gives a one-word clue and a number indicating how many words relate to that clue
+4. Team members can make multiple guesses for a clue if they're confident
+5. If a wrong word is guessed, the turn ends immediately
+6. Guessing the assassin word loses the game instantly
+7. First team to find all their words wins
+8. Strategic elements:
+   - Try to connect multiple words with one clue
+   - Be careful to avoid clues that might lead to opponent words or assassin
+   - Consider the risk/reward of multiple guesses
+   - Track opponent clues to avoid their words`;
+
 export async function getSpymasterClue(
   model: string | AIModel,
   words: string[],
@@ -161,33 +176,46 @@ export async function getSpymasterClue(
 ): Promise<{ word: string; number: number }> {
   const validatedModel = validateModel(model as string);
 
-  const previousClues = gameHistory
+  // Filter active clues (clues with remaining unguessed words)
+  const activeClues = gameHistory
     .filter(entry => entry.type === "clue")
-    .map(entry => entry.content)
-    .join(", ");
+    .map(clueEntry => {
+      const relatedGuesses = gameHistory
+        .filter(g => g.type === "guess" && g.relatedClue === clueEntry.content);
+      const guessedWords = new Set(relatedGuesses.map(g => g.word));
+      const remainingWords = teamWords.filter(w => !guessedWords.has(w));
+      return {
+        clue: clueEntry.content,
+        remainingWords
+      };
+    })
+    .filter(clue => clue.remainingWords.length > 0);
 
-  const previousGuesses = gameHistory
+  const prompt = `${GAME_RULES}
+
+As the ${model === "red_spymaster" ? "Red" : "Blue"} team's spymaster, analyze the game state:
+
+Board Configuration:
+- Your team's remaining words: ${teamWords.join(", ")}
+- Opposing team's words (avoid these): ${opposingWords.join(", ")}
+- Assassin word (critical to avoid): ${assassinWord}
+- All board words: ${words.join(", ")}
+
+Game State:
+- Active clues with unguessed words: ${activeClues.length > 0 
+  ? activeClues.map(c => `"${c.clue}" (${c.remainingWords.length} words remaining)`).join(", ")
+  : "None"}
+- Previous guesses and results: ${gameHistory
     .filter(entry => entry.type === "guess")
-    .map(entry => `${entry.content} (${entry.result})`)
-    .join(", ");
+    .map(entry => `${entry.word} (${entry.result})`).join(", ")}
 
-  const prompt = `As a Codenames spymaster, you must follow these strict rules:
-1. Give exactly ONE one-word clue and a number indicating how many words it relates to
-2. The clue cannot be any form/part/variation of the visible words
-3. Cannot use proper nouns, abbreviations, or made-up words
-4. Never reveal which specific words are your team's words
-5. Carefully avoid words that might lead to opponent or assassin words
+Strategic Objectives:
+1. Create efficient clues linking multiple words when possible
+2. Avoid clues that could lead to opponent words or assassin
+3. Consider the current game state and which team is ahead
+4. Try to build on previous successful clues if applicable
 
-Board words: ${words.join(", ")}
-My team's words: ${teamWords.join(", ")}
-Opposing team's words: ${opposingWords.join(", ")}
-Assassin word: ${assassinWord}
-
-Game History:
-Previous clues given: ${previousClues || "None"}
-Previous guesses made: ${previousGuesses || "None"}
-
-Give your clue following these rules in JSON format: { "word": "clue", "number": count }`;
+Provide your clue in JSON format: { "word": "clue", "number": count }`;
 
   switch (getAIService(validatedModel)) {
     case "openai":
@@ -203,6 +231,7 @@ Give your clue following these rules in JSON format: { "word": "clue", "number":
   }
 }
 
+// Updated guesser move function with strategic context
 export async function getGuesserMove(
   model: AIModel,
   words: string[],
@@ -212,32 +241,47 @@ export async function getGuesserMove(
 ): Promise<string> {
   const availableWords = words.filter(word => !revealedCards.includes(word));
 
-  const previousCluesAndResults = gameHistory
-    .filter(entry => entry.type === "clue" || entry.type === "guess")
-    .map(entry => {
-      if (entry.type === "clue") return `Clue: ${entry.content}`;
-      return `Guess: ${entry.content} (${entry.result})`;
-    })
-    .join("\n");
+  const currentTeam = gameHistory[gameHistory.length - 1]?.turn || "red";
+  const teamHistory = gameHistory.filter(entry => entry.turn === currentTeam);
 
-  const prompt = `As a Codenames operative, follow these strict rules:
-1. You can only guess from unrevealed words
-2. You must consider the current clue carefully
-3. Avoid words that might be the assassin
-4. Learn from previous guesses and their results
+  // Track active clues and their unguessed words
+  const activeClues = teamHistory
+    .filter(entry => entry.type === "clue")
+    .map(clueEntry => {
+      const relatedGuesses = teamHistory
+        .filter(g => g.type === "guess" && g.relatedClue === clueEntry.content);
+      return {
+        clue: clueEntry.content,
+        guessedWords: relatedGuesses.map(g => g.word),
+        result: relatedGuesses.map(g => g.result)
+      };
+    });
 
-Available unrevealed words: ${availableWords.join(", ")}
-Current clue word: ${clue.word}
-Current clue number: ${clue.number}
-Already revealed words: ${revealedCards.join(", ")}
+  const prompt = `${GAME_RULES}
 
-Game History:
-${previousCluesAndResults}
+As a Codenames operative, analyze the current game situation:
+
+Current State:
+- Available words: ${availableWords.join(", ")}
+- Current clue: "${clue.word}" (looking for ${clue.number} words)
+- Revealed words: ${revealedCards.join(", ")}
+
+Team History:
+${activeClues.map(c => 
+  `Clue "${c.clue}": ${c.guessedWords.length > 0 
+    ? `Guesses: ${c.guessedWords.map((w, i) => `${w} (${c.result[i]})`).join(", ")}` 
+    : "No guesses yet"}`
+).join("\n")}
+
+Strategy Tips:
+1. Consider previous guess results to inform your decision
+2. If uncertain about a word, save it for later rounds
+3. Look for strong connections to the current clue
+4. Be cautious of words that might be opponent's or assassin
+5. Consider the risk/reward of guessing when uncertain
 
 Choose one unrevealed word that best matches the clue.
-Respond in JSON format: { "guess": "chosen_word" }
-
-Note: Your guess must be one of the unrevealed available words!`;
+Respond in JSON format: { "guess": "chosen_word" }`;
 
   switch (getAIService(model)) {
     case "openai":
@@ -253,6 +297,7 @@ Note: Your guess must be one of the unrevealed available words!`;
   }
 }
 
+// Updated discussion function with strategic context
 export async function discussAndVote(
   model: AIModel,
   team: "red" | "blue",
@@ -260,15 +305,30 @@ export async function discussAndVote(
   clue: { word: string; number: number } | undefined,
   teamDiscussion: TeamDiscussionEntry[],
   gameHistory: GameHistoryEntry[],
-  revealedCards: string[],
+  revealedCards: string[]
 ): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   if (!clue || !clue.word || typeof clue.number !== 'number') {
     throw new Error("Invalid clue format provided to discussAndVote");
   }
 
   const availableWords = words.filter(word => !revealedCards.includes(word));
+  const teamHistory = gameHistory.filter(entry => entry.turn === team);
 
-  // Filter discussions to only include current team's discussion
+  // Track clue success rates
+  const cluePerformance = teamHistory
+    .filter(entry => entry.type === "clue")
+    .map(clueEntry => {
+      const relatedGuesses = teamHistory
+        .filter(g => g.type === "guess" && g.relatedClue === clueEntry.content);
+      const successRate = relatedGuesses.filter(g => g.result === "correct").length / relatedGuesses.length;
+      return {
+        clue: clueEntry.content,
+        successRate: isNaN(successRate) ? 0 : successRate,
+        guesses: relatedGuesses.map(g => `${g.word} (${g.result})`)
+      };
+    });
+
+  // Sort discussions by timestamp to show the conversation flow
   const recentTeamDiscussion = teamDiscussion
     .filter(entry => entry.team === team)
     .sort((a, b) => b.timestamp - a.timestamp)
@@ -280,46 +340,33 @@ export async function discussAndVote(
     })
     .join("\n");
 
-  // Extract relevant game history for informed decisions
-  const relevantHistory = gameHistory
-    .filter(entry => {
-      // Include all clues for context
-      if (entry.type === "clue") return true;
-      // For guesses, only include the team's own guesses and their results
-      if (entry.type === "guess") return entry.turn === team;
-      return false;
-    })
-    .map(entry => {
-      if (entry.type === "clue") return `Clue: ${entry.content}`;
-      return `Our guess: ${entry.content} (${entry.result})`;
-    })
-    .join("\n");
+  const prompt = `${GAME_RULES}
 
-  const prompt = `As a Codenames AI player on the ${team} team, analyze the situation:
+Current Game Discussion:
+Team: ${team}
+Current Clue: "${clue.word}" (looking for ${clue.number} words)
+Available Words: ${availableWords.join(", ")}
 
-Current Game State:
-- Current clue: "${clue.word}" (${clue.number})
-- Available unrevealed words: ${availableWords.join(", ")}
-- Words we've revealed: ${revealedCards.filter(word => gameHistory.some(h => h.turn === team && h.content === word)).join(", ")}
+Team Performance:
+${cluePerformance.map(c => 
+  `Clue "${c.clue}": Success rate ${(c.successRate * 100).toFixed(1)}%
+   Guesses: ${c.guesses.join(", ")}`
+).join("\n")}
 
-Your Team's Discussion:
+Recent Team Discussion:
 ${recentTeamDiscussion}
 
-Your Team's History:
-${relevantHistory}
+As ${getModelDisplayName(model)}, contribute to the team discussion:
+1. Analyze previous guesses and their results
+2. Consider teammates' suggestions and confidence levels
+3. Evaluate the risk/reward of available words
+4. Share strategic insights about the current clue
+5. If highly confident (>0.7), suggest a specific word
 
-As ${getModelDisplayName(model)}, carefully consider:
-1. The current clue and how it relates to unrevealed words
-2. Your teammates' suggestions and their confidence levels
-3. Previous successful and unsuccessful guesses by your team
-4. Avoid words that have already been revealed
-5. Express your confidence level (0-1)
-6. Suggest a word only if you're confident (>0.7)
-
-Respond in JSON format: { 
-  "message": "your detailed analysis",
-  "confidence": number,
-  "suggestedWord": "word_choice"  // Only include if confidence > 0.7
+Respond in JSON format: {
+  "message": "your analysis and strategic thoughts",
+  "confidence": number between 0-1,
+  "suggestedWord": "word_choice" // Only if confidence > 0.7
 }`;
 
   switch (getAIService(model)) {

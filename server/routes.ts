@@ -6,8 +6,23 @@ import { insertGameSchema } from "@shared/schema";
 import type { Game, GameState, TeamDiscussionEntry, ConsensusVote, GameHistoryEntry } from "@shared/schema";
 import type { AIModel } from "./lib/ai-service";
 
+const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"] as const;
+
 function getRandomDelay(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// Add type for clue tracking in game history
+interface ClueHistoryEntry extends GameHistoryEntry {
+  type: "clue";
+  content: string;
+}
+
+interface GuessHistoryEntry extends GameHistoryEntry {
+  type: "guess";
+  word: string;
+  relatedClue: string;
+  result: "correct" | "wrong" | "assassin";
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -45,13 +60,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const isRedTurn = game.currentTurn === "red_turn";
       const currentTeamWords = isRedTurn ? game.redTeam : game.blueTeam;
       const opposingTeamWords = isRedTurn ? game.blueTeam : game.redTeam;
-
-      // Only allow spymaster to give clues
       const currentSpymaster = isRedTurn ? game.redSpymaster : game.blueSpymaster;
 
-      // Check if currentSpymaster is a valid AI model
-      const validAIModels = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"] as const;
-      if (!currentSpymaster || !validAIModels.includes(currentSpymaster as AIModel)) {
+      if (!currentSpymaster || !VALID_MODELS.includes(currentSpymaster as AIModel)) {
         return res.status(400).json({ error: "Invalid spymaster configuration" });
       }
 
@@ -61,13 +72,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         currentTeamWords,
         opposingTeamWords,
         game.assassin,
-        game.gameHistory || []
+        game.gameHistory as GameHistoryEntry[] || []
       );
 
-      // Add the clue to game history
-      const historyEntry: GameHistoryEntry = {
-        turn: isRedTurn ? "red" : "blue",
+      // Add clue to game history
+      const historyEntry: ClueHistoryEntry = {
         type: "clue",
+        turn: isRedTurn ? "red" : "blue",
         content: `${clue.word} (${clue.number})`,
         timestamp: Date.now()
       };
@@ -127,49 +138,59 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (req.body.revealedCards) {
         const newCard = req.body.revealedCards[req.body.revealedCards.length - 1];
+        const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
 
-        // Update scores and game state
+        // Get the last clue from history
+        const lastClue = [...(game.gameHistory || [])]
+          .reverse()
+          .find(entry => entry.type === "clue");
+
+        // Update scores
         if (game.redTeam.includes(newCard)) {
           updates.redScore = (game.redScore || 0) + 1;
         } else if (game.blueTeam.includes(newCard)) {
           updates.blueScore = (game.blueScore || 0) + 1;
         }
 
+        // Determine guess result
+        let result: "correct" | "wrong" | "assassin";
         if (newCard === game.assassin) {
+          result = "assassin";
           updates.gameState = game.currentTurn === "red_turn" ? "blue_win" : "red_win";
+        } else if (
+          (game.currentTurn === "red_turn" && game.redTeam.includes(newCard)) ||
+          (game.currentTurn === "blue_turn" && game.blueTeam.includes(newCard))
+        ) {
+          result = "correct";
+        } else {
+          result = "wrong";
         }
 
         updates.revealedCards = req.body.revealedCards;
 
         // Add to game history
-        const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-        const entry: GameHistoryEntry = {
-          team: currentTeam,
+        const historyEntry: GuessHistoryEntry = {
+          type: "guess",
+          turn: currentTeam,
           word: newCard,
-          timestamp: Date.now(),
-          result: game.redTeam.includes(newCard) ? "red" :
-            game.blueTeam.includes(newCard) ? "blue" :
-              game.assassin === newCard ? "assassin" : "neutral"
+          relatedClue: lastClue?.content || "",
+          result,
+          timestamp: Date.now()
         };
 
-        updates.gameHistory = [...(game.gameHistory || []), entry];
-      }
+        updates.gameHistory = [...(game.gameHistory || []), historyEntry];
 
-      if (req.body.revealedCards && !updates.gameState) {
-        const lastCard = req.body.revealedCards[req.body.revealedCards.length - 1];
-        const wasCorrectGuess = (game.currentTurn === "red_turn" && game.redTeam.includes(lastCard)) ||
-          (game.currentTurn === "blue_turn" && game.blueTeam.includes(lastCard));
-
-        if (!wasCorrectGuess) {
+        // Update turn if guess was incorrect
+        if (result === "wrong" || result === "assassin") {
           updates.currentTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
         }
-      }
 
-      // Check for team victory conditions
-      if (game.redTeam.every(word => req.body.revealedCards?.includes(word))) {
-        updates.gameState = "red_win";
-      } else if (game.blueTeam.every(word => req.body.revealedCards?.includes(word))) {
-        updates.gameState = "blue_win";
+        // Check for victory conditions
+        if (game.redTeam.every(word => req.body.revealedCards?.includes(word))) {
+          updates.gameState = "red_win";
+        } else if (game.blueTeam.every(word => req.body.revealedCards?.includes(word))) {
+          updates.gameState = "blue_win";
+        }
       }
 
       const updatedGame = await storage.updateGame(game.id, updates);
