@@ -7,12 +7,12 @@ import { createInitialGame } from "@/lib/game";
 import type { AIModel, PlayerType } from "@shared/schema";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { 
-  SiOpenai, 
-  SiMeta, 
+import {
+  SiOpenai,
+  SiMeta,
   SiAnthropic,
   SiX,
-  SiGooglegemini 
+  SiGooglegemini
 } from 'react-icons/si';
 
 type TeamConfig = {
@@ -21,25 +21,25 @@ type TeamConfig = {
 };
 
 const AIOptions = [
-  { 
-    value: "human", 
+  {
+    value: "human",
     label: "Human Player",
     icon: "👤"
   },
-  { 
-    value: "gpt-4o", 
+  {
+    value: "gpt-4o",
     label: "GPT-4 Omega",
     icon: <SiOpenai className="text-blue-500" />,
     description: "OpenAI's most advanced model"
   },
-  { 
-    value: "claude-3-5-sonnet-20241022", 
+  {
+    value: "claude-3-5-sonnet-20241022",
     label: "Claude 3.5 Sonnet",
     icon: <SiAnthropic className="text-gray-700" />,
     description: "Anthropic's latest model"
   },
-  { 
-    value: "grok-2-1212", 
+  {
+    value: "grok-2-1212",
     label: "Grok 2",
     icon: <SiX className="text-black" />,
     description: "xAI's newest model"
@@ -57,11 +57,11 @@ const autoAssignRoles = (players: PlayerType[]): TeamConfig => {
   const aiPlayers = players.filter(p => p !== "human");
   const humans = players.filter(p => p === "human");
 
-  // If no AI players, return all humans
+  // If no AI players, return all humans with first human as spymaster
   if (aiPlayers.length === 0) {
     return {
-      spymaster: "human",
-      operatives: humans
+      spymaster: humans[0] || "human", // Handle case with no humans
+      operatives: humans.slice(1)
     };
   }
 
@@ -76,12 +76,17 @@ export default function Home() {
   const [_, navigate] = useLocation();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  const [redTeam, setRedTeam] = useState<TeamConfig>(() => 
-    autoAssignRoles(["gpt-4o", "human", "claude-3-5-sonnet-20241022"])
-  );
-  const [blueTeam, setBlueTeam] = useState<TeamConfig>(() => 
-    autoAssignRoles(["claude-3-5-sonnet-20241022", "human", "grok-2-1212"])
-  );
+
+  // Initialize with 3 players per team
+  const [redTeam, setRedTeam] = useState<TeamConfig>(() => ({
+    spymaster: "gpt-4o",
+    operatives: ["claude-3-5-sonnet-20241022", "human"]
+  }));
+
+  const [blueTeam, setBlueTeam] = useState<TeamConfig>(() => ({
+    spymaster: "claude-3-5-sonnet-20241022",
+    operatives: ["grok-2-1212", "human"]
+  }));
 
   const startGame = async () => {
     try {
@@ -106,25 +111,44 @@ export default function Home() {
 
   const updateTeamConfig = (
     team: "red" | "blue",
-    players: PlayerType[]
+    role: "spymaster" | "operative",
+    index: number | undefined,
+    newValue: PlayerType
   ) => {
-    const newConfig = autoAssignRoles(players);
     if (team === "red") {
-      setRedTeam(newConfig);
+      setRedTeam(prev => {
+        if (role === "spymaster") {
+          return { ...prev, spymaster: newValue };
+        } else if (index !== undefined) {
+          const newOperatives = [...prev.operatives];
+          newOperatives[index] = newValue;
+          return { ...prev, operatives: newOperatives };
+        }
+        return prev;
+      });
     } else {
-      setBlueTeam(newConfig);
+      setBlueTeam(prev => {
+        if (role === "spymaster") {
+          return { ...prev, spymaster: newValue };
+        } else if (index !== undefined) {
+          const newOperatives = [...prev.operatives];
+          newOperatives[index] = newValue;
+          return { ...prev, operatives: newOperatives };
+        }
+        return prev;
+      });
     }
   };
 
   const renderPlayerSelect = (
     team: "red" | "blue",
     role: "spymaster" | "operative",
-    index?: number,
-    value?: PlayerType,
-    onChange?: (value: PlayerType) => void
+    index?: number
   ) => {
     const currentTeam = team === "red" ? redTeam : blueTeam;
-    const actualValue = role === "spymaster" ? currentTeam.spymaster : value;
+    const value = role === "spymaster"
+      ? currentTeam.spymaster
+      : index !== undefined ? currentTeam.operatives[index] : undefined;
 
     return (
       <div className="space-y-2">
@@ -132,34 +156,25 @@ export default function Home() {
           {role} {index !== undefined && index + 1}
         </label>
         <Select
-          value={actualValue}
-          onValueChange={(val) => {
-            if (onChange) {
-              onChange(val as PlayerType);
-              // Automatically reassign roles when a player changes
-              const teamConfig = team === "red" ? redTeam : blueTeam;
-              const allPlayers = role === "spymaster" 
-                ? [val as PlayerType, ...teamConfig.operatives]
-                : [...teamConfig.operatives];
-              if (index !== undefined) {
-                allPlayers[index] = val as PlayerType;
-              }
-              updateTeamConfig(team, allPlayers);
-            }
+          value={value}
+          onValueChange={(val: string) => {
+            updateTeamConfig(team, role, index, val as PlayerType);
           }}
         >
           <SelectTrigger className="w-full bg-white">
             <SelectValue placeholder={`Select ${role}`}>
-              <div className="flex items-center space-x-2">
-                {actualValue && AIOptions.find(opt => opt.value === actualValue)?.icon}
-                <span>{AIOptions.find(opt => opt.value === actualValue)?.label}</span>
-              </div>
+              {value && (
+                <div className="flex items-center space-x-2">
+                  {AIOptions.find(opt => opt.value === value)?.icon}
+                  <span>{AIOptions.find(opt => opt.value === value)?.label}</span>
+                </div>
+              )}
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {AIOptions.map(option => (
-              <SelectItem 
-                key={option.value} 
+              <SelectItem
+                key={option.value}
                 value={option.value}
                 className="flex items-center space-x-2 p-3 cursor-pointer hover:bg-gray-50"
               >
@@ -195,15 +210,10 @@ export default function Home() {
               <h2 className="text-xl font-semibold text-red-600">Red Team</h2>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-red-50/50 rounded-lg">
-              {renderPlayerSelect("red", "spymaster", undefined, undefined, 
-                (value) => setRedTeam(prev => ({ ...prev, spymaster: value })))}
-              {redTeam.operatives.map((operative, index) => (
+              {renderPlayerSelect("red", "spymaster")}
+              {[0, 1].map((index) => (
                 <div key={index}>
-                  {renderPlayerSelect("red", "operative", index, operative,
-                    (value) => setRedTeam(prev => ({
-                      ...prev,
-                      operatives: prev.operatives.map((op, i) => i === index ? value : op)
-                    })))}
+                  {renderPlayerSelect("red", "operative", index)}
                 </div>
               ))}
             </div>
@@ -216,15 +226,10 @@ export default function Home() {
               <h2 className="text-xl font-semibold text-blue-600">Blue Team</h2>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-blue-50/50 rounded-lg">
-              {renderPlayerSelect("blue", "spymaster", undefined, undefined,
-                (value) => setBlueTeam(prev => ({ ...prev, spymaster: value })))}
-              {blueTeam.operatives.map((operative, index) => (
+              {renderPlayerSelect("blue", "spymaster")}
+              {[0, 1].map((index) => (
                 <div key={index}>
-                  {renderPlayerSelect("blue", "operative", index, operative,
-                    (value) => setBlueTeam(prev => ({
-                      ...prev,
-                      operatives: prev.operatives.map((op, i) => i === index ? value : op)
-                    })))}
+                  {renderPlayerSelect("blue", "operative", index)}
                 </div>
               ))}
             </div>
