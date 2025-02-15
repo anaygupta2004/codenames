@@ -221,6 +221,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "AI model is not part of the team" });
       }
 
+      // Add a small random delay to make discussions feel more natural
       await new Promise(resolve => setTimeout(resolve, getRandomDelay(500, 2000)));
 
       const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
