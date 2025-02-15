@@ -33,7 +33,7 @@ export default function GamePage() {
   const aiTurnInProgress = useRef(false);
   const [isSpymasterView, setIsSpymasterView] = useState(false);
   const [gameLog, setGameLog] = useState<GameLogEntry[]>([]);
-  const [timer, setTimer] = useState<number>(30); // Changed from 180 to 30 seconds
+  const [timer, setTimer] = useState<number>(60); // Changed from 30 to 60 seconds
   const [isDiscussing, setIsDiscussing] = useState(false);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.8);
   const [votingInProgress, setVotingInProgress] = useState(false);
@@ -140,8 +140,17 @@ export default function GamePage() {
 
       // Reset timer when turn changes due to wrong guess
       if (result === "wrong" || result === "assassin") {
-        setTimer(30);
+        setTimer(60);
       }
+    },
+    onError: (error) => {
+      toast({
+        title: "Error making guess",
+        description: error.message,
+        variant: "destructive",
+      });
+      setIsDiscussing(false);
+      aiTurnInProgress.current = false;
     }
   });
 
@@ -170,7 +179,7 @@ export default function GamePage() {
 
             // Start team discussion
             setIsDiscussing(true);
-            setTimer(30);
+            setTimer(60);
 
             // Sequential team discussion
             const aiPlayers = currentTeam.filter(player => player !== "human" && player !== currentSpymaster);
@@ -224,21 +233,49 @@ export default function GamePage() {
     }, currentTeamDiscussions[0]);
 
     if (mostConfidentOption && mostConfidentOption.confidence > 0.6) {
-      // Auto-vote for the most confident option if it's above threshold
-      await voteOnWord.mutateAsync({
-        model: mostConfidentOption.player,
-        team: currentTeam,
-        word: mostConfidentOption.suggestedWord || ''
-      });
+      try {
+        setVotingInProgress(true);
+        // Auto-vote for the most confident option if it's above threshold
+        const result = await voteOnWord.mutateAsync({
+          model: mostConfidentOption.player,
+          team: currentTeam,
+          word: mostConfidentOption.suggestedWord || ''
+        });
+
+        if (!result.allApproved) {
+          // If vote wasn't approved, switch turns
+          const res = await apiRequest("PATCH", `/api/games/${id}`, {
+            currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
+          });
+          await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+        }
+      } catch (error) {
+        console.error("Error in timeout voting:", error);
+        // Switch turns on error
+        const res = await apiRequest("PATCH", `/api/games/${id}`, {
+          currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
+        });
+        await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+      }
     } else {
       // End discussion and switch turns if no confident options
-      setIsDiscussing(false);
-      // Update turn through normal game update mechanism
-      const res = await apiRequest("PATCH", `/api/games/${game.id}`, {
-        currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
-      });
-      await queryClient.invalidateQueries({ queryKey: [`/api/games/${game.id}`] });
+      try {
+        setIsDiscussing(false);
+        const res = await apiRequest("PATCH", `/api/games/${id}`, {
+          currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
+        });
+        await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+        setTimer(60); // Reset timer for next turn
+      } catch (error) {
+        console.error("Error switching turns:", error);
+        toast({
+          title: "Error switching turns",
+          description: "Please try again",
+          variant: "destructive",
+        });
+      }
     }
+    setVotingInProgress(false);
   };
 
 
