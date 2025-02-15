@@ -52,10 +52,7 @@ export default function GamePage() {
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/clue`);
       const data = await res.json();
-      if (data.error) {
-        console.error("AI Clue Error:", data.error);
-        throw new Error(data.error);
-      }
+      if (data.error) throw new Error(data.error);
       setLastClue(data);
       return data;
     },
@@ -75,17 +72,6 @@ export default function GamePage() {
       const res = await apiRequest("POST", `/api/games/${id}/ai/discuss`, params);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-
-      // If confidence is very high, trigger immediate voting
-      if (data.confidence > confidenceThreshold) {
-        setVotingInProgress(true);
-        await voteOnWord.mutateAsync({
-          model: params.model,
-          team: params.team,
-          word: data.suggestedWord
-        });
-      }
-
       return data;
     },
     onSuccess: () => {
@@ -96,17 +82,18 @@ export default function GamePage() {
   const voteOnWord = useMutation({
     mutationFn: async (params: { model: AIModel; team: "red" | "blue"; word: string }) => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/vote`, params);
-      return res.json();
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-      if (data.allApproved) {
-        makeGuess.mutate(data.vote.word);
-        setIsDiscussing(false);
-        if (timerRef.current) {
-          clearInterval(timerRef.current);
-        }
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      // If all votes are in and approved, make the guess
+      if (data.allVoted && data.allApproved) {
+        await makeGuess.mutateAsync(params.word);
       }
+
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
     }
   });
 
@@ -114,7 +101,6 @@ export default function GamePage() {
     mutationFn: async (word: string) => {
       if (!game) return null;
 
-      // Prevent guessing already revealed words
       if (game.revealedCards.includes(word)) {
         toast({
           title: "Invalid move",
@@ -124,49 +110,21 @@ export default function GamePage() {
         return null;
       }
 
-      const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-      let result: "correct" | "wrong" | "assassin" = "wrong";
-
-      if (game.redTeam.includes(word)) {
-        result = currentTeam === "red" ? "correct" : "wrong";
-      } else if (game.blueTeam.includes(word)) {
-        result = currentTeam === "blue" ? "correct" : "wrong";
-      } else if (game.assassin === word) {
-        result = "assassin";
-      }
-
-      const currentPlayer = game.currentTurn === "red_turn" ?
-        game.redPlayers[0] : game.bluePlayers[0];
-
-      setGameLog(prev => [...prev, {
-        team: currentTeam,
-        action: `guessed "${word}"`,
-        result,
-        word,
-        player: currentPlayer as string
-      }]);
-
       const res = await apiRequest("PATCH", `/api/games/${id}`, {
         revealedCards: [...(game?.revealedCards || []), word],
       });
 
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      return { data, result };
+      return data;
     },
     onSuccess: (response) => {
       if (!response) return;
-      const { data, result } = response;
 
       queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
       aiTurnInProgress.current = false;
       setLastClue(null);
       setIsDiscussing(false);
-
-      // Always switch turns after a guess, unless it was correct
-      if (result === "wrong" || result === "assassin") {
-        switchTurns();
-      }
     },
     onError: (error: any) => {
       toast({
@@ -179,27 +137,29 @@ export default function GamePage() {
     }
   });
 
-  // Update handleAITurn to handle errors better
+  // Updated handleAITurn to properly manage discussion and voting
   const handleAITurn = async () => {
     try {
       if (aiTurnInProgress.current || !game) return;
       aiTurnInProgress.current = true;
 
-      // Only get a clue if we don't have one for this turn
+      // Get current team configuration
+      const isRedTeam = game.currentTurn === "red_turn";
+      const currentTeam = isRedTeam ? "red" : "blue";
+      const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
+      const currentTeamPlayers = isRedTeam ? game.redPlayers : game.bluePlayers;
+
+      // 1. Get clue from spymaster if needed
       if (!lastClue) {
         try {
           const clue = await getAIClue.mutateAsync();
           setLastClue(clue);
 
-          const isRedTeam = game.currentTurn === "red_turn";
-          const currentTeam = isRedTeam ? "red" : "blue";
-          const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
-
           if (currentSpymaster && typeof currentSpymaster === 'string') {
             setGameLog(prev => [...prev, {
               team: currentTeam,
               action: `gives clue: "${clue.word} (${clue.number})"`,
-              result: "correct",
+              result: "pending",
               player: currentSpymaster
             }]);
           }
@@ -209,35 +169,49 @@ export default function GamePage() {
         }
       }
 
-      // Start team discussion
+      if (!lastClue) return;
+
+      // 2. Start team discussion
       setIsDiscussing(true);
       setTimer(20); // 20 seconds for discussion
 
-      const isRedTeam = game.currentTurn === "red_turn";
-      const currentTeam = isRedTeam ? "red" : "blue";
-      const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
-
-      // Get current team's AI operatives (excluding spymaster)
-      const currentTeamPlayers = isRedTeam ? game.redPlayers : game.bluePlayers;
+      // Get AI operatives (excluding spymaster)
       const aiOperatives = currentTeamPlayers.filter(
         player => typeof player === 'string' &&
         player !== 'human' &&
         player !== currentSpymaster
       ) as AIModel[];
 
-      // Run AI discussions in parallel for operatives only
-      if (lastClue) {
-        await Promise.all(aiOperatives.map(async (aiPlayer) => {
-          await discussMove.mutateAsync({
-            model: aiPlayer,
-            team: currentTeam,
-            clue: lastClue
-          });
-        }));
-
-        // Trigger voting after discussions
-        handleTimeoutVoting();
+      // 3. Have each AI operative discuss the clue
+      for (const aiOperative of aiOperatives) {
+        await discussMove.mutateAsync({
+          model: aiOperative,
+          team: currentTeam,
+          clue: lastClue
+        });
       }
+
+      // 4. After discussion, find the most confident suggestion
+      if (game.teamDiscussion) {
+        const currentDiscussion = (game.teamDiscussion as TeamDiscussionEntry[])
+          .filter(entry => entry.team === currentTeam)
+          .sort((a, b) => b.confidence - a.confidence);
+
+        if (currentDiscussion.length > 0) {
+          const bestSuggestion = currentDiscussion[0];
+          if (bestSuggestion.suggestedWord && bestSuggestion.confidence > 0.7) {
+            // 5. Have all AI operatives vote on the suggestion
+            for (const aiOperative of aiOperatives) {
+              await voteOnWord.mutateAsync({
+                model: aiOperative,
+                team: currentTeam,
+                word: bestSuggestion.suggestedWord
+              });
+            }
+          }
+        }
+      }
+
     } catch (error) {
       console.error("Error in AI turn:", error);
       aiTurnInProgress.current = false;
@@ -334,6 +308,7 @@ export default function GamePage() {
     setVotingInProgress(false);
     setIsDiscussing(false);
   };
+
 
 
   const switchTurns = async () => {
