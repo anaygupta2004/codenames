@@ -202,9 +202,9 @@ Board Configuration:
 - All board words: ${words.join(", ")}
 
 Game State:
-- Active clues with unguessed words: ${activeClues.length > 0 
-  ? activeClues.map(c => `"${c.clue}" (${c.remainingWords.length} words remaining)`).join(", ")
-  : "None"}
+- Active clues with unguessed words: ${activeClues.length > 0
+    ? activeClues.map(c => `"${c.clue}" (${c.remainingWords.length} words remaining)`).join(", ")
+    : "None"}
 - Previous guesses and results: ${gameHistory
     .filter(entry => entry.type === "guess")
     .map(entry => `${entry.word} (${entry.result})`).join(", ")}
@@ -267,11 +267,11 @@ Current State:
 - Revealed words: ${revealedCards.join(", ")}
 
 Team History:
-${activeClues.map(c => 
-  `Clue "${c.clue}": ${c.guessedWords.length > 0 
-    ? `Guesses: ${c.guessedWords.map((w, i) => `${w} (${c.result[i]})`).join(", ")}` 
-    : "No guesses yet"}`
-).join("\n")}
+${activeClues.map(c =>
+    `Clue "${c.clue}": ${c.guessedWords.length > 0
+      ? `Guesses: ${c.guessedWords.map((w, i) => `${w} (${c.result[i]})`).join(", ")}`
+      : "No guesses yet"}`
+  ).join("\n")}
 
 Strategy Tips:
 1. Consider previous guess results to inform your decision
@@ -348,10 +348,10 @@ Current Clue: "${clue.word}" (looking for ${clue.number} words)
 Available Words: ${availableWords.join(", ")}
 
 Team Performance:
-${cluePerformance.map(c => 
-  `Clue "${c.clue}": Success rate ${(c.successRate * 100).toFixed(1)}%
+${cluePerformance.map(c =>
+    `Clue "${c.clue}": Success rate ${(c.successRate * 100).toFixed(1)}%
    Guesses: ${c.guesses.join(", ")}`
-).join("\n")}
+  ).join("\n")}
 
 Recent Team Discussion:
 ${recentTeamDiscussion}
@@ -446,21 +446,40 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
   const response = await anthropic.messages.create({
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [
+      { 
+        role: 'system', 
+        content: 'You are a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing "word" and "number" fields. Never include explanations outside of the JSON.' 
+      },
+      { 
+        role: 'user', 
+        content: prompt 
+      }
+    ],
   });
 
   if (!response.content[0] || response.content[0].type !== 'text') {
     throw new Error("Invalid response format from Anthropic");
   }
 
-  const content = response.content[0].text;
-  const result = JSON.parse(content) as { word: string; number: number };
+  try {
+    const content = response.content[0].text.trim();
+    // If response starts with explanation text, try to extract JSON
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("No valid JSON found in response");
+    }
 
-  if (!result.word || typeof result.number !== 'number') {
-    throw new Error("Invalid response format from Anthropic");
+    const result = JSON.parse(jsonMatch[0]);
+    if (!result.word || typeof result.number !== 'number') {
+      throw new Error("Invalid response format from Anthropic");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Error parsing Anthropic response:", error);
+    throw new Error("Failed to parse Anthropic response");
   }
-
-  return result;
 }
 
 async function getXAIClue(prompt: string): Promise<{ word: string; number: number }> {
@@ -507,14 +526,40 @@ async function getAnthropicGuess(prompt: string): Promise<{ guess: string }> {
   const response = await anthropic.messages.create({
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [
+      { 
+        role: 'system', 
+        content: 'You are a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing a "guess" field. Never include explanations outside of the JSON.' 
+      },
+      { 
+        role: 'user', 
+        content: prompt 
+      }
+    ],
   });
 
   if (!response.content[0] || response.content[0].type !== 'text') {
     throw new Error("Invalid response format from Anthropic");
   }
 
-  return JSON.parse(response.content[0].text) as { guess: string };
+  try {
+    const content = response.content[0].text.trim();
+    // If response starts with explanation text, try to extract JSON
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("No valid JSON found in response");
+    }
+
+    const result = JSON.parse(jsonMatch[0]);
+    if (!result.guess || typeof result.guess !== 'string') {
+      throw new Error("Invalid response format from Anthropic");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Error parsing Anthropic response:", error);
+    throw new Error("Failed to parse Anthropic response");
+  }
 }
 
 async function getXAIGuess(prompt: string): Promise<{ guess: string }> {
@@ -556,7 +601,16 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
   const response = await anthropic.messages.create({
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [
+      { 
+        role: 'system', 
+        content: 'You are a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing "message" and "confidence" fields, and optionally a "suggestedWord" field. Never include explanations outside of the JSON.' 
+      },
+      { 
+        role: 'user', 
+        content: prompt 
+      }
+    ],
   });
 
   if (!response.content[0] || response.content[0].type !== 'text') {
@@ -564,13 +618,29 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
   }
 
   try {
-    const content = response.content[0].text;
-    return JSON.parse(content) as { message: string; confidence: number; suggestedWord?: string };
+    const content = response.content[0].text.trim();
+    // If response starts with explanation text, try to extract JSON
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return {
+        message: "I encountered an error processing the response. Let's continue our discussion.",
+        confidence: 0.5
+      };
+    }
+
+    const result = JSON.parse(jsonMatch[0]);
+    if (!result.message || typeof result.confidence !== 'number') {
+      return {
+        message: "I encountered a format error. Let's proceed with the discussion.",
+        confidence: 0.5
+      };
+    }
+
+    return result;
   } catch (error) {
     console.error("Error parsing Anthropic response:", error);
-    // Provide a fallback response if JSON parsing fails
     return {
-      message: "I encountered an error processing the response. Let's continue our discussion.",
+      message: "I encountered an error processing the response. Let's proceed with caution.",
       confidence: 0.5
     };
   }
@@ -615,7 +685,16 @@ async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; re
   const response = await anthropic.messages.create({
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [
+      { 
+        role: 'system', 
+        content: 'You are a Codenames AI assistant that MUST ONLY respond with valid JSON objects containing "approved" and "reason" fields. Never include explanations outside of the JSON.' 
+      },
+      { 
+        role: 'user', 
+        content: prompt 
+      }
+    ],
   });
 
   if (!response.content[0] || response.content[0].type !== 'text') {
@@ -623,11 +702,27 @@ async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; re
   }
 
   try {
-    const content = response.content[0].text;
-    return JSON.parse(content) as { approved: boolean; reason: string };
+    const content = response.content[0].text.trim();
+    // If response starts with explanation text, try to extract JSON
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return {
+        approved: false,
+        reason: "Could not process voting decision due to response format error."
+      };
+    }
+
+    const result = JSON.parse(jsonMatch[0]);
+    if (typeof result.approved !== 'boolean' || typeof result.reason !== 'string') {
+      return {
+        approved: false,
+        reason: "Could not process voting decision due to invalid response format."
+      };
+    }
+
+    return result;
   } catch (error) {
     console.error("Error parsing Anthropic vote response:", error);
-    // Provide a fallback response if JSON parsing fails
     return {
       approved: false,
       reason: "Could not process the voting decision due to an error."
