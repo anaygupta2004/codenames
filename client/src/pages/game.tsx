@@ -30,6 +30,10 @@ type GameLogEntry = {
   player?: string;
 };
 
+const getModelDisplayName = (model: AIModel): string => {
+  return AI_MODEL_INFO[model]?.name || model;
+}
+
 export default function GamePage() {
   const { id } = useParams();
   const { toast } = useToast();
@@ -200,7 +204,7 @@ export default function GamePage() {
     }
   });
 
-  // Update handleAITurn for faster parallel discussions
+  // Update handleAITurn for proper game logs and discussion
   const handleAITurn = async () => {
     try {
       if (aiTurnInProgress.current || !game) return;
@@ -215,6 +219,14 @@ export default function GamePage() {
       if (!lastClue) {
         const clue = await getAIClue.mutateAsync();
         setLastClue(clue);
+
+        // Add spymaster clue to game log
+        setGameLog(prev => [...prev, {
+          team: currentTeam,
+          action: `Spymaster gives clue: ${clue.word} (${clue.number})`,
+          result: "pending",
+          player: currentSpymaster
+        }]);
 
         // Broadcast spymaster's clue
         if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -248,7 +260,15 @@ export default function GamePage() {
           clue: lastClue
         });
 
-        // Broadcast each AI's discussion contribution
+        // Add AI discussion to game log
+        setGameLog(prev => [...prev, {
+          team: currentTeam,
+          action: result.message,
+          result: "pending",
+          player: aiOperative
+        }]);
+
+        // Broadcast discussion
         if (socketRef.current?.readyState === WebSocket.OPEN) {
           socketRef.current.send(JSON.stringify({
             type: 'discussion',
@@ -272,19 +292,41 @@ export default function GamePage() {
         .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
 
       if (bestSuggestion?.suggestedWord) {
+        // Add voting start to game log
+        setGameLog(prev => [...prev, {
+          team: currentTeam,
+          action: `Team voting on word: ${bestSuggestion.suggestedWord}`,
+          result: "pending"
+        }]);
+
         // 5. All AI operatives vote on the best suggestion
         setVotingInProgress(true);
-        const votePromises = aiOperatives.map(aiOperative =>
-          voteOnWord.mutateAsync({
+        const votePromises = aiOperatives.map(async aiOperative => {
+          const voteResult = await voteOnWord.mutateAsync({
             model: aiOperative,
             team: currentTeam,
             word: bestSuggestion.suggestedWord!
-          })
-        );
+          });
+
+          // Add vote to game log
+          setGameLog(prev => [...prev, {
+            team: currentTeam,
+            action: `${getModelDisplayName(aiOperative)} votes ${voteResult.vote.approved ? 'YES' : 'NO'}`,
+            result: "pending",
+            player: aiOperative
+          }]);
+
+          return voteResult;
+        });
 
         await Promise.all(votePromises);
       } else {
-        // If no confident suggestions, end turn
+        // Log no confident suggestions
+        setGameLog(prev => [...prev, {
+          team: currentTeam,
+          action: "No confident word suggestions, ending turn",
+          result: "pending"
+        }]);
         await switchTurns();
       }
 
@@ -429,6 +471,7 @@ export default function GamePage() {
     }
   };
 
+  // Update the renderTeamDiscussion function to properly show discussions
   const renderTeamDiscussion = () => {
     if (!game) return null;
 
@@ -489,9 +532,11 @@ export default function GamePage() {
                         <Icon className="w-5 h-5" />
                         <span className="font-medium">{modelInfo.name}</span>
                       </div>
-                      <span className="text-sm">
-                        Confidence: {Math.round(entry.confidence * 100)}%
-                      </span>
+                      {entry.confidence !== undefined && (
+                        <span className="text-sm">
+                          Confidence: {Math.round(entry.confidence * 100)}%
+                        </span>
+                      )}
                     </div>
                     <p className="text-sm leading-relaxed">{entry.message}</p>
                     {suggestedWord && (
@@ -632,9 +677,9 @@ export default function GamePage() {
                 <div className="flex items-center gap-2">
                   {Icon && <Icon className="w-4 h-4" />}
                   <span className="font-medium capitalize">
-                    {displayName}
+                    {displayName}:
                   </span>
-                  {log.action}
+                  <span>{log.action}</span>
                   {getLogEmoji(log.result)}
                 </div>
               </div>
