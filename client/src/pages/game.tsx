@@ -168,6 +168,7 @@ export default function GamePage() {
         const currentSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
         const modelInfo = AI_MODEL_INFO[currentSpymaster as keyof typeof AI_MODEL_INFO];
 
+        // Log the spymaster's clue
         setGameLog(prev => [...prev, {
           team: currentTeam,
           action: `gives clue: "${clue.word} (${clue.number})"`,
@@ -177,16 +178,18 @@ export default function GamePage() {
 
         // Start team discussion with shorter timer
         setIsDiscussing(true);
-        setTimer(30); // Reduced from 60 to 30 seconds
+        setTimer(20); // Reduced time for faster gameplay
 
-        // Get current team's AI players
+        // Get current team's AI players EXCLUDING the spymaster
         const currentTeamPlayers = isRedTeam ? game.redPlayers : game.bluePlayers;
-        const aiPlayers = currentTeamPlayers.filter(
-          player => typeof player === 'string' && player !== 'human' && player !== currentSpymaster
+        const aiOperatives = currentTeamPlayers.filter(
+          player => typeof player === 'string' &&
+          player !== 'human' &&
+          player !== (isRedTeam ? game.redSpymaster : game.blueSpymaster)
         ) as string[];
 
-        // Run AI discussions in parallel instead of sequentially
-        await Promise.all(aiPlayers.map(async (aiPlayer) => {
+        // Run AI discussions in parallel for operatives only
+        await Promise.all(aiOperatives.map(async (aiPlayer) => {
           await discussMove.mutateAsync({
             model: aiPlayer,
             team: currentTeam,
@@ -200,7 +203,6 @@ export default function GamePage() {
     } catch (error) {
       console.error("Error in AI turn:", error);
       aiTurnInProgress.current = false;
-      // Switch turns if there's an error
       await switchTurns();
     }
   };
@@ -240,9 +242,13 @@ export default function GamePage() {
     if (!game) return;
 
     const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    const currentSpymaster = game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster;
     const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
+
+    // Filter discussions to only include operatives (non-spymaster) suggestions
     const currentTeamDiscussions = teamDiscussion
       .filter(entry => entry.team === currentTeam)
+      .filter(entry => entry.player !== currentSpymaster) // Exclude spymaster from voting
       .filter(entry => entry.suggestedWord); // Only consider entries with suggestions
 
     if (currentTeamDiscussions.length === 0) {
@@ -250,7 +256,7 @@ export default function GamePage() {
       return;
     }
 
-    // Find the word with highest confidence across all discussions
+    // Find the word with highest confidence across all operative discussions
     const mostConfidentSuggestion = currentTeamDiscussions.reduce((prev, current) => {
       return (current.confidence > prev.confidence) ? current : prev;
     });
@@ -259,14 +265,17 @@ export default function GamePage() {
       try {
         setVotingInProgress(true);
         const currentPlayers = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
-        const aiPlayers = currentPlayers.filter(player =>
-          typeof player === 'string' && player !== 'human'
+        // Get AI operatives (excluding spymaster and humans)
+        const aiOperatives = currentPlayers.filter(player =>
+          typeof player === 'string' &&
+          player !== 'human' &&
+          player !== (game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster)
         ) as string[];
 
-        // Collect votes from all AI players
-        for (const aiPlayer of aiPlayers) {
+        // Collect votes from all AI operatives
+        for (const aiOperative of aiOperatives) {
           await voteOnWord.mutateAsync({
-            model: aiPlayer,
+            model: aiOperative,
             team: currentTeam,
             word: mostConfidentSuggestion.suggestedWord
           });
