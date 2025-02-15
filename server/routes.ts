@@ -10,10 +10,19 @@ import type { AIModel } from "./lib/ai-service";
 const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"] as const;
 
 // Track active game discussions
-const gameDiscussions = new Map<number, Set<WebSocket>>();
+const gameDiscussions = new Map<number, {
+  clients: Set<WebSocket>;
+  activeTeams: Set<string>;
+}>();
 
-function getRandomDelay(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+function initializeGameRoom(gameId: number) {
+  if (!gameDiscussions.has(gameId)) {
+    gameDiscussions.set(gameId, {
+      clients: new Set(),
+      activeTeams: new Set()
+    });
+  }
+  return gameDiscussions.get(gameId)!;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -23,12 +32,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const wss = new WebSocketServer({ 
     server: httpServer, 
     path: '/ws',
-    perMessageDeflate: false
   });
 
   wss.on('connection', (ws: WebSocket) => {
     console.log('New WebSocket connection established');
     let gameId: number | null = null;
+    let currentTeam: string | null = null;
 
     ws.on('message', async (message: Buffer) => {
       try {
@@ -37,17 +46,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         if (data.type === 'join') {
           gameId = Number(data.gameId);
-          if (!gameDiscussions.has(gameId)) {
-            gameDiscussions.set(gameId, new Set());
+          currentTeam = data.team;
+          const gameRoom = initializeGameRoom(gameId);
+          gameRoom.clients.add(ws);
+          if (currentTeam) {
+            gameRoom.activeTeams.add(currentTeam);
           }
-          gameDiscussions.get(gameId)?.add(ws);
-          console.log(`Client joined game ${gameId}`);
+          console.log(`Team ${currentTeam} joined game ${gameId}`);
         }
 
         if (data.type === 'discussion' && gameId) {
-          console.log('Broadcasting discussion:', data);
-          const clients = gameDiscussions.get(gameId);
-          if (clients) {
+          const gameRoom = gameDiscussions.get(gameId);
+          if (gameRoom?.clients) {
             const messageData = JSON.stringify({
               type: 'discussion',
               content: data.content,
@@ -58,7 +68,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               timestamp: Date.now()
             });
 
-            clients.forEach((client) => {
+            gameRoom.clients.forEach(client => {
               if (client !== ws && client.readyState === WebSocket.OPEN) {
                 client.send(messageData);
               }
@@ -72,45 +82,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     ws.on('close', () => {
       if (gameId) {
-        const clients = gameDiscussions.get(gameId);
-        if (clients) {
-          clients.delete(ws);
-          if (clients.size === 0) {
+        const gameRoom = gameDiscussions.get(gameId);
+        if (gameRoom) {
+          gameRoom.clients.delete(ws);
+          if (currentTeam) {
+            gameRoom.activeTeams.delete(currentTeam);
+          }
+          if (gameRoom.clients.size === 0) {
             gameDiscussions.delete(gameId);
           }
+          console.log(`Team ${currentTeam} left game ${gameId}`);
         }
-        console.log(`Client left game ${gameId}`);
       }
     });
 
     ws.on('error', (error) => {
       console.error('WebSocket error:', error);
     });
-  });
-
-  app.use('/api', (req, res, next) => {
-    res.setHeader('Content-Type', 'application/json');
-    next();
-  });
-
-  app.post("/api/games", async (req, res) => {
-    try {
-      const gameData = insertGameSchema.parse(req.body);
-      const game = await storage.createGame(gameData);
-      res.json(game);
-    } catch (error: any) {
-      res.status(400).json({ error: error.message });
-    }
-  });
-
-  app.get("/api/games/:id", async (req, res) => {
-    try {
-      const game = await storage.getGame(Number(req.params.id));
-      if (!game) return res.status(404).json({ error: "Game not found" });
-      res.json(game);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
   });
 
   app.post("/api/games/:id/ai/clue", async (req, res) => {
@@ -123,12 +111,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const opposingTeamWords = isRedTurn ? game.blueTeam : game.redTeam;
       const currentSpymaster = isRedTurn ? game.redSpymaster : game.blueSpymaster;
 
-      console.log('AI Clue Request:', {
-        currentTurn: game.currentTurn,
-        spymaster: currentSpymaster,
-        teamWords: currentTeamWords
-      });
-
       if (!currentSpymaster || !VALID_MODELS.includes(currentSpymaster as AIModel)) {
         return res.status(400).json({ error: "Invalid spymaster configuration" });
       }
@@ -139,10 +121,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         currentTeamWords,
         opposingTeamWords,
         game.assassin,
-        game.gameHistory as GameHistoryEntry[]
+        game.gameHistory || []
       );
-
-      console.log('Generated clue:', clue);
 
       const historyEntry: GameHistoryEntry = {
         type: "clue",
@@ -152,12 +132,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       await storage.updateGame(game.id, {
-        gameHistory: [...(game.gameHistory || []), historyEntry]
+        gameHistory: game.gameHistory ? [...game.gameHistory, historyEntry] : [historyEntry]
       });
 
       res.json(clue);
     } catch (error: any) {
       console.error("Error in AI clue:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/games/:id/ai/discuss", async (req, res) => {
+    try {
+      const game = await storage.getGame(Number(req.params.id));
+      if (!game) return res.status(404).json({ error: "Game not found" });
+
+      const { model, team, clue } = req.body;
+      if (!model || !team || !VALID_MODELS.includes(model as AIModel)) {
+        return res.status(400).json({ error: "Invalid model or team" });
+      }
+
+      const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
+      if (!currentTeamPlayers.includes(model)) {
+        return res.status(400).json({ error: "AI model is not part of the team" });
+      }
+
+      const discussion = await discussAndVote(
+        model as AIModel,
+        team,
+        game.words,
+        clue,
+        game.teamDiscussion || [],
+        game.gameHistory || [],
+        game.revealedCards
+      );
+
+      const newDiscussionEntry: TeamDiscussionEntry = {
+        team,
+        player: model,
+        message: discussion.message,
+        confidence: discussion.confidence,
+        suggestedWord: discussion.suggestedWord,
+        timestamp: Date.now()
+      };
+
+      const updatedDiscussion = game.teamDiscussion 
+        ? [...game.teamDiscussion, newDiscussionEntry]
+        : [newDiscussionEntry];
+
+      await storage.updateGame(game.id, {
+        teamDiscussion: updatedDiscussion
+      });
+
+      res.json(newDiscussionEntry);
+    } catch (error: any) {
+      console.error("Error in AI discussion:", error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -181,7 +210,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         game.words,
         clue,
         game.revealedCards,
-        (game.gameHistory as GameHistoryEntry[]) || []
+        game.gameHistory || []
       );
 
       res.json({ guess });
@@ -202,13 +231,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const newCard = req.body.revealedCards[req.body.revealedCards.length - 1];
         const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
 
-        // Get the last clue from history
-        const gameHistory = game.gameHistory as GameHistoryEntry[];
+        const gameHistory = game.gameHistory || [];
         const lastClue = [...gameHistory]
           .reverse()
-          .find(entry => entry.type === "clue") as ClueHistoryEntry | undefined;
+          .find(entry => entry.type === "clue");
 
-        // Update scores and handle game state changes
         if (game.redTeam.includes(newCard)) {
           updates.redScore = (game.redScore || 0) + 1;
         } else if (game.blueTeam.includes(newCard)) {
@@ -230,26 +257,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         updates.revealedCards = req.body.revealedCards;
 
-        // Add guess to game history
-        const historyEntry: GuessHistoryEntry = {
+        const historyEntry: GameHistoryEntry = {
           type: "guess",
           turn: currentTeam,
-          word: newCard,
-          relatedClue: lastClue ? lastClue.content : "",
-          result,
           content: `Guessed: ${newCard}`,
           timestamp: Date.now()
         };
 
-        const currentHistory = game.gameHistory as GameHistoryEntry[];
-        updates.gameHistory = [...currentHistory, historyEntry];
+        updates.gameHistory = game.gameHistory 
+          ? [...game.gameHistory, historyEntry]
+          : [historyEntry];
 
-        // Update turn if guess was incorrect or assassin was revealed
         if (result === "wrong" || result === "assassin") {
           updates.currentTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
         }
 
-        // Check for victory conditions
         if (game.redTeam.every(word => req.body.revealedCards?.includes(word))) {
           updates.gameState = "red_win";
         } else if (game.blueTeam.every(word => req.body.revealedCards?.includes(word))) {
@@ -257,10 +279,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Handle turn changes
       if (req.body.currentTurn) {
         updates.currentTurn = req.body.currentTurn;
-        // Clear team discussion when turn changes
         updates.teamDiscussion = [];
         updates.consensusVotes = [];
       }
@@ -269,55 +289,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(updatedGame);
     } catch (error: any) {
       console.error("Error in patch game:", error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post("/api/games/:id/ai/discuss", async (req, res) => {
-    try {
-      const game = await storage.getGame(Number(req.params.id));
-      if (!game) return res.status(404).json({ error: "Game not found" });
-
-      const { model, team, clue } = req.body;
-      console.log('Discussion request:', { model, team, clue });
-
-      if (!model || !team || !VALID_MODELS.includes(model as AIModel)) {
-        return res.status(400).json({ error: "Invalid model or team" });
-      }
-
-      const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
-      if (!currentTeamPlayers.includes(model)) {
-        return res.status(400).json({ error: "AI model is not part of the team" });
-      }
-
-      const discussion = await discussAndVote(
-        model as AIModel,
-        team,
-        game.words,
-        clue,
-        game.teamDiscussion as TeamDiscussionEntry[],
-        game.gameHistory as GameHistoryEntry[],
-        game.revealedCards
-      );
-
-      console.log('Generated discussion:', discussion);
-
-      const newDiscussionEntry: TeamDiscussionEntry = {
-        team,
-        player: model as AIModel,
-        message: discussion.message,
-        confidence: discussion.confidence,
-        timestamp: Date.now(),
-        suggestedWord: discussion.suggestedWord
-      };
-
-      await storage.updateGame(game.id, {
-        teamDiscussion: [...(game.teamDiscussion || []), newDiscussionEntry]
-      });
-
-      res.json(newDiscussionEntry);
-    } catch (error: any) {
-      console.error("Error in AI discussion:", error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -342,7 +313,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         model as AIModel,
         team,
         word,
-        (game.teamDiscussion as TeamDiscussionEntry[]) || []
+        game.teamDiscussion || []
       );
 
       const newVote: ConsensusVote = {
@@ -353,12 +324,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         timestamp: Date.now()
       };
 
-      const updatedVotes = [...(game.consensusVotes || []), newVote];
+      const updatedVotes = game.consensusVotes 
+        ? [...game.consensusVotes, newVote]
+        : [newVote];
+
       const updatedGame = await storage.updateGame(game.id, {
         consensusVotes: updatedVotes
       });
 
-      // Check if all team AI operatives have voted
       const teamAIPlayers = currentTeamPlayers.filter(
         p => p !== "human" && p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
       ) as AIModel[];
@@ -376,6 +349,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Error in AI vote:", error);
       res.status(500).json({ error: error.message });
     }
+  });
+
+  app.get("/api/games/:id", async (req, res) => {
+    try {
+      const game = await storage.getGame(Number(req.params.id));
+      if (!game) return res.status(404).json({ error: "Game not found" });
+      res.json(game);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/games", async (req, res) => {
+    try {
+      const gameData = insertGameSchema.parse(req.body);
+      const game = await storage.createGame(gameData);
+      res.json(game);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Content-Type', 'application/json');
+    next();
   });
 
   return httpServer;

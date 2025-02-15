@@ -49,7 +49,11 @@ export default function GamePage() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const [lastClue, setLastClue] = useState<{ word: string; number: number } | null>(null);
 
-  // Initialize WebSocket connection with reconnection logic
+  const { data: game, isLoading } = useQuery<Game>({
+    queryKey: [`/api/games/${id}`],
+  });
+
+  // Update WebSocket connection initialization
   useEffect(() => {
     if (!id) return;
 
@@ -60,17 +64,22 @@ export default function GamePage() {
 
       socket.onopen = () => {
         console.log('WebSocket connected');
-        socket.send(JSON.stringify({ type: 'join', gameId: Number(id) }));
+        const currentTeam = game?.currentTurn === "red_turn" ? "red" : "blue";
+        socket.send(JSON.stringify({ 
+          type: 'join', 
+          gameId: Number(id),
+          team: currentTeam
+        }));
       };
 
       socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          console.log('Received WebSocket message:', data);
+
           if (data.type === 'discussion') {
-            // Update game state to reflect new discussion
             queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
 
-            // Add to game log if it's a meaningful discussion
             if (data.content) {
               setGameLog(prev => [...prev, {
                 team: data.team,
@@ -87,8 +96,7 @@ export default function GamePage() {
 
       socket.onclose = () => {
         console.log('WebSocket disconnected. Attempting to reconnect...');
-        // Attempt to reconnect after 3 seconds
-        reconnectTimeoutRef.current = setTimeout(connectWebSocket, 3000);
+        setTimeout(connectWebSocket, 3000);
       };
 
       socket.onerror = (error) => {
@@ -104,17 +112,9 @@ export default function GamePage() {
       if (socketRef.current) {
         socketRef.current.close();
       }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
     };
-  }, [id]);
+  }, [id, game?.currentTurn]);
 
-  const { data: game, isLoading } = useQuery<Game>({
-    queryKey: [`/api/games/${id}`],
-  });
-
-  // Update the getAIClue mutation with better error handling
   const getAIClue = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/games/${id}/ai/clue`);
@@ -204,6 +204,7 @@ export default function GamePage() {
     }
   });
 
+  // Update WebSocket connection logic in handleAITurn
   const handleAITurn = async () => {
     try {
       if (aiTurnInProgress.current || !game) return;
@@ -222,13 +223,11 @@ export default function GamePage() {
 
       aiTurnInProgress.current = true;
 
-      // 1. Get clue from spymaster
       if (!lastClue) {
         console.log('Getting clue from spymaster:', currentSpymaster);
         const clue = await getAIClue.mutateAsync();
         setLastClue(clue);
 
-        // Add spymaster clue to game log
         setGameLog(prev => [...prev, {
           team: currentTeam,
           action: `Spymaster gives clue: ${clue.word} (${clue.number})`,
@@ -236,7 +235,6 @@ export default function GamePage() {
           player: currentSpymaster
         }]);
 
-        // Broadcast spymaster's clue
         if (socketRef.current?.readyState === WebSocket.OPEN) {
           socketRef.current.send(JSON.stringify({
             type: 'discussion',
@@ -250,18 +248,16 @@ export default function GamePage() {
 
       if (!lastClue) return;
 
-      // 2. Start team discussion
       setIsDiscussing(true);
       setDiscussionTimer(60);
 
-      // Get AI operatives excluding spymaster and human players
       const aiOperatives = currentTeamPlayers.filter(
         player => player !== 'human' && player !== currentSpymaster
       ) as AIModel[];
 
       console.log('Starting discussion with AI operatives:', aiOperatives);
 
-      // 3. Have all AI operatives discuss simultaneously
+
       const discussionPromises = aiOperatives.map(async (aiOperative) => {
         console.log(`${aiOperative} starting discussion...`);
         try {
@@ -271,7 +267,6 @@ export default function GamePage() {
             clue: lastClue
           });
 
-          // Add AI discussion to game log
           setGameLog(prev => [...prev, {
             team: currentTeam,
             action: result.message,
@@ -279,7 +274,6 @@ export default function GamePage() {
             player: aiOperative
           }]);
 
-          // Broadcast discussion
           if (socketRef.current?.readyState === WebSocket.OPEN) {
             socketRef.current.send(JSON.stringify({
               type: 'discussion',
@@ -302,21 +296,17 @@ export default function GamePage() {
       const discussions = await Promise.all(discussionPromises);
       console.log('Team discussions completed:', discussions);
 
-      // 4. Find the most confident suggestion
       const bestSuggestion = discussions
         .filter(d => d.suggestedWord && d.confidence > confidenceThreshold)
         .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
 
       if (bestSuggestion?.suggestedWord) {
-        console.log('Best suggestion found:', bestSuggestion);
-        // Add voting start to game log
         setGameLog(prev => [...prev, {
           team: currentTeam,
           action: `Team voting on word: ${bestSuggestion.suggestedWord}`,
           result: "pending"
         }]);
 
-        // 5. All AI operatives vote on the best suggestion
         setVotingInProgress(true);
         const votePromises = aiOperatives.map(async aiOperative => {
           console.log(`${aiOperative} voting on word:`, bestSuggestion.suggestedWord);
@@ -326,7 +316,6 @@ export default function GamePage() {
             word: bestSuggestion.suggestedWord!
           });
 
-          // Add vote to game log
           setGameLog(prev => [...prev, {
             team: currentTeam,
             action: `${getModelDisplayName(aiOperative)} votes ${voteResult.vote.approved ? 'YES' : 'NO'}`,
@@ -467,6 +456,7 @@ export default function GamePage() {
   };
 
 
+
   const switchTurns = async () => {
     try {
       setIsDiscussing(false);
@@ -504,7 +494,6 @@ export default function GamePage() {
     const teamColor = currentTeam === "red" ? "red" : "blue";
     const discussions = (game.teamDiscussion || []) as TeamDiscussionEntry[];
 
-    // Sort discussions by timestamp in ascending order (oldest first)
     const sortedDiscussions = discussions
       .filter(entry => entry.team === currentTeam)
       .sort((a, b) => a.timestamp - b.timestamp);
@@ -541,7 +530,6 @@ export default function GamePage() {
                   Icon: Bot
                 };
                 const { Icon } = modelInfo;
-                const suggestedWord = entry.suggestedWord;
 
                 return (
                   <div
@@ -564,9 +552,9 @@ export default function GamePage() {
                       )}
                     </div>
                     <p className="text-sm leading-relaxed">{entry.message}</p>
-                    {suggestedWord && (
+                    {entry.suggestedWord && (
                       <p className="text-sm mt-2 font-medium">
-                        Suggests: {suggestedWord}
+                        Suggests: {entry.suggestedWord}
                       </p>
                     )}
                   </div>
