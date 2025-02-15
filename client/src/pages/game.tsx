@@ -228,62 +228,64 @@ export default function GamePage() {
     const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
     const currentTeamDiscussions = teamDiscussion.filter(entry => entry.team === currentTeam);
 
+    if (currentTeamDiscussions.length === 0) {
+      // No discussions, switch turns
+      try {
+        await switchTurns();
+      } catch (error) {
+        console.error("Error switching turns:", error);
+      }
+      return;
+    }
+
     // Find the option with highest confidence
     const mostConfidentOption = currentTeamDiscussions.reduce((prev, current) => {
       return (current.confidence > prev.confidence) ? current : prev;
     }, currentTeamDiscussions[0]);
 
-    if (mostConfidentOption && mostConfidentOption.confidence > 0.6) {
+    if (mostConfidentOption && mostConfidentOption.confidence > 0.6 && mostConfidentOption.suggestedWord) {
       try {
         setVotingInProgress(true);
-        // Auto-vote for the most confident option if it's above threshold
-        const result = await voteOnWord.mutateAsync({
+        const voteResult = await voteOnWord.mutateAsync({
           model: mostConfidentOption.player,
           team: currentTeam,
-          word: mostConfidentOption.suggestedWord || ''
+          word: mostConfidentOption.suggestedWord
         });
 
-        if (result.allApproved && lastClue) {
+        if (voteResult.allApproved) {
           // If vote is approved, make the guess
-          await getAIGuess.mutateAsync(lastClue);
+          await makeGuess.mutateAsync(mostConfidentOption.suggestedWord);
         } else {
-          // If vote wasn't approved, switch turns
-          const res = await apiRequest("PATCH", `/api/games/${id}`, {
-            currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
-          });
-          await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-          setTimer(60); // Reset timer for next turn
+          await switchTurns();
         }
       } catch (error) {
         console.error("Error in timeout voting:", error);
-        // Switch turns on error
-        const res = await apiRequest("PATCH", `/api/games/${id}`, {
-          currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
-        });
-        await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-        setTimer(60); // Reset timer for next turn
+        await switchTurns();
       }
     } else {
-      // End discussion and switch turns if no confident options
-      try {
-        setIsDiscussing(false);
-        const res = await apiRequest("PATCH", `/api/games/${id}`, {
-          currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
-        });
-        await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-        setTimer(60); // Reset timer for next turn
-      } catch (error) {
-        console.error("Error switching turns:", error);
-        toast({
-          title: "Error switching turns",
-          description: "Please try again",
-          variant: "destructive",
-        });
-      }
+      await switchTurns();
     }
     setVotingInProgress(false);
   };
 
+  const switchTurns = async () => {
+    try {
+      setIsDiscussing(false);
+      const res = await apiRequest("PATCH", `/api/games/${id}`, {
+        currentTurn: game?.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
+      });
+      await queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+      setTimer(60); // Reset timer for next turn
+      setLastClue(null);
+    } catch (error) {
+      console.error("Error switching turns:", error);
+      toast({
+        title: "Error switching turns",
+        description: "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
 
   const renderTeamDiscussion = () => {
     if (!game) return null;
@@ -467,6 +469,39 @@ export default function GamePage() {
     }
   };
 
+  // Update game log rendering to show proper model names and icons
+  const renderGameLog = () => {
+    return (
+      <ScrollArea className="h-[200px]">
+        <div className="space-y-2">
+          {gameLog.map((log, index) => {
+            const modelInfo = log.player ? AI_MODEL_INFO[log.player as keyof typeof AI_MODEL_INFO] : null;
+            const Icon = modelInfo?.Icon;
+            const displayName = modelInfo?.name || log.team;
+
+            return (
+              <div
+                key={index}
+                className={`p-2 rounded text-sm ${
+                  log.team === "red" ? "bg-red-50" : "bg-blue-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {Icon && <Icon className="w-4 h-4" />}
+                  <span className="font-medium capitalize">
+                    {displayName}
+                  </span>
+                  {log.action}
+                  {getLogEmoji(log.result)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </ScrollArea>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
       <div className="mb-8 text-center">
@@ -527,30 +562,7 @@ export default function GamePage() {
           <Card>
             <CardContent className="p-4">
               <h3 className="font-bold text-lg mb-4">Game Log</h3>
-              <ScrollArea className="h-[200px]">
-                <div className="space-y-2">
-                  {gameLog.map((log, index) => {
-                    const { Icon, name } = log.player ? getModelInfo(log.player) : { Icon: null, name: "" };
-                    return (
-                      <div
-                        key={index}
-                        className={`p-2 rounded text-sm ${
-                          log.team === "red" ? "bg-red-50" : "bg-blue-50"
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          {Icon && <Icon className="w-4 h-4" />}
-                          <span className="font-medium capitalize">
-                            {name || log.team}
-                          </span>
-                          {log.action}
-                          {getLogEmoji(log.result)}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </ScrollArea>
+              {renderGameLog()}
             </CardContent>
           </Card>
         </div>
