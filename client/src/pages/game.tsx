@@ -36,7 +36,8 @@ export default function GamePage() {
   const aiTurnInProgress = useRef(false);
   const [isSpymasterView, setIsSpymasterView] = useState(false);
   const [gameLog, setGameLog] = useState<GameLogEntry[]>([]);
-  const [timer, setTimer] = useState<number>(60);
+  const [turnTimer, setTurnTimer] = useState<number>(60); // 60 seconds per turn
+  const [discussionTimer, setDiscussionTimer] = useState<number>(20); // 20 seconds for discussion
   const [isDiscussing, setIsDiscussing] = useState(false);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.8);
   const [votingInProgress, setVotingInProgress] = useState(false);
@@ -173,13 +174,13 @@ export default function GamePage() {
 
       // 2. Start team discussion
       setIsDiscussing(true);
-      setTimer(20); // 20 seconds for discussion
+      setDiscussionTimer(20); // 20 seconds for discussion
 
       // Get AI operatives (excluding spymaster)
       const aiOperatives = currentTeamPlayers.filter(
         player => typeof player === 'string' &&
-        player !== 'human' &&
-        player !== currentSpymaster
+          player !== 'human' &&
+          player !== currentSpymaster
       ) as AIModel[];
 
       // 3. Have each AI operative discuss the clue
@@ -190,28 +191,6 @@ export default function GamePage() {
           clue: lastClue
         });
       }
-
-      // 4. After discussion, find the most confident suggestion
-      if (game.teamDiscussion) {
-        const currentDiscussion = (game.teamDiscussion as TeamDiscussionEntry[])
-          .filter(entry => entry.team === currentTeam)
-          .sort((a, b) => b.confidence - a.confidence);
-
-        if (currentDiscussion.length > 0) {
-          const bestSuggestion = currentDiscussion[0];
-          if (bestSuggestion.suggestedWord && bestSuggestion.confidence > 0.7) {
-            // 5. Have all AI operatives vote on the suggestion
-            for (const aiOperative of aiOperatives) {
-              await voteOnWord.mutateAsync({
-                model: aiOperative,
-                team: currentTeam,
-                word: bestSuggestion.suggestedWord
-              });
-            }
-          }
-        }
-      }
-
     } catch (error) {
       console.error("Error in AI turn:", error);
       aiTurnInProgress.current = false;
@@ -233,82 +212,87 @@ export default function GamePage() {
     }
   }, [game?.currentTurn, isDiscussing, lastClue]);
 
+  // Handle turn timer
   useEffect(() => {
-    if (isDiscussing) {
-      const interval = setInterval(() => {
-        setTimer((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval);
-            // Force voting when time runs out
-            handleTimeoutVoting();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+    if (!game || game.gameState?.includes("win")) return;
 
-      return () => clearInterval(interval);
-    }
+    // Start turn timer
+    const interval = setInterval(() => {
+      setTurnTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          handleTimeUp();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [game?.currentTurn]);
+
+  // Handle discussion timer
+  useEffect(() => {
+    if (!isDiscussing) return;
+
+    const interval = setInterval(() => {
+      setDiscussionTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          handleDiscussionTimeUp();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
   }, [isDiscussing]);
 
-  const handleTimeoutVoting = async () => {
+  const handleTimeUp = async () => {
     if (!game) return;
 
-    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-    const currentSpymaster = game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster;
-    const teamDiscussion = (game.teamDiscussion || []) as TeamDiscussionEntry[];
-
-    // Filter discussions to only include operatives (non-spymaster) suggestions
-    const currentTeamDiscussions = teamDiscussion
-      .filter(entry => entry.team === currentTeam)
-      .filter(entry => entry.player !== currentSpymaster) // Exclude spymaster from voting
-      .filter(entry => entry.suggestedWord); // Only consider entries with suggestions
-
-    if (currentTeamDiscussions.length === 0) {
-      await switchTurns();
-      return;
-    }
-
-    // Find the word with highest confidence across all operative discussions
-    const mostConfidentSuggestion = currentTeamDiscussions.reduce((prev, current) => {
-      return (current.confidence > prev.confidence) ? current : prev;
+    toast({
+      title: "Time's up!",
+      description: "Switching to the next team's turn",
+      variant: "default",
     });
 
-    if (mostConfidentSuggestion && mostConfidentSuggestion.confidence > 0.6) {
-      try {
-        setVotingInProgress(true);
-        const currentPlayers = game.currentTurn === "red_turn" ? game.redPlayers : game.bluePlayers;
-        // Get AI operatives (excluding spymaster and humans)
-        const aiOperatives = currentPlayers.filter(player =>
-          typeof player === 'string' &&
-          player !== 'human' &&
-          player !== (game.currentTurn === "red_turn" ? game.redSpymaster : game.blueSpymaster)
-        ) as AIModel[];
+    await switchTurns();
+    setTurnTimer(60); // Reset turn timer
+  };
 
-        // Collect votes from all AI operatives
-        for (const aiOperative of aiOperatives) {
-          await voteOnWord.mutateAsync({
-            model: aiOperative,
-            team: currentTeam,
-            word: mostConfidentSuggestion.suggestedWord
-          });
-        }
+  const handleDiscussionTimeUp = async () => {
+    if (!game) return;
 
-        // Make the guess with the most confident suggestion
-        await makeGuess.mutateAsync(mostConfidentSuggestion.suggestedWord);
+    toast({
+      title: "Discussion time's up!",
+      description: "Time to make a decision",
+      variant: "default",
+    });
 
-      } catch (error) {
-        console.error("Error in timeout voting:", error);
-        await switchTurns();
-      }
+    setIsDiscussing(false);
+    setDiscussionTimer(20); // Reset discussion timer
+    await handleTeamDecision();
+  };
+
+  const handleTeamDecision = async () => {
+    if (!game || !lastClue) return;
+
+    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    const teamDiscussion = game.teamDiscussion as TeamDiscussionEntry[];
+
+    // Find the most confident suggestion
+    const suggestions = teamDiscussion
+      .filter(entry => entry.team === currentTeam && entry.suggestedWord)
+      .sort((a, b) => b.confidence - a.confidence);
+
+    if (suggestions.length > 0 && suggestions[0].confidence > 0.7) {
+      await makeGuess.mutateAsync(suggestions[0].suggestedWord!);
     } else {
       await switchTurns();
     }
-
-    setVotingInProgress(false);
-    setIsDiscussing(false);
   };
-
 
 
   const switchTurns = async () => {
@@ -322,7 +306,8 @@ export default function GamePage() {
       });
 
       // Reset all turn-related state
-      setTimer(20);
+      setTurnTimer(60);
+      setDiscussionTimer(20);
       setLastClue(null);
       aiTurnInProgress.current = false;
 
@@ -359,11 +344,11 @@ export default function GamePage() {
             </h3>
             {isDiscussing && (
               <div className="flex items-center gap-2">
-                <Timer className="w-4 h-4" />
+                <Clock className="w-4 h-4" />
                 <span className={`text-sm font-medium ${
-                  timer <= 10 ? 'text-red-500' : ''
+                  discussionTimer <= 10 ? 'text-red-500' : ''
                 }`}>
-                  {timer}s
+                  {discussionTimer}s
                 </span>
                 {votingInProgress && (
                   <span className="text-sm text-green-500">
@@ -564,9 +549,26 @@ export default function GamePage() {
           <div className={`px-6 py-2 rounded-full font-semibold ${
             game.currentTurn === "red_turn" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
           }`}>
-            {currentTeam}'s Turn {isDiscussing && `(Discussion: ${timer}s)`}
+            {currentTeam}'s Turn
           </div>
           <div className="text-blue-500 font-bold text-xl">Blue: {game.blueScore}</div>
+        </div>
+
+        <div className="flex items-center justify-center gap-4 mb-4">
+          <div className="flex items-center gap-2">
+            <Timer className="w-4 h-4" />
+            <span className={`font-medium ${turnTimer <= 10 ? 'text-red-500' : ''}`}>
+              Turn: {turnTimer}s
+            </span>
+          </div>
+          {isDiscussing && (
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4" />
+              <span className={`font-medium ${discussionTimer <= 10 ? 'text-red-500' : ''}`}>
+                Discussion: {discussionTimer}s
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-center gap-2 mb-4">
