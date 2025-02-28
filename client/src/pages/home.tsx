@@ -20,11 +20,21 @@ type TeamConfig = {
   operatives: PlayerType[];
 };
 
-const AIOptions = [
+// Define a clearer interface for AI options
+interface AIOption {
+  value: string;
+  label: string;
+  icon: string | React.ReactNode;
+  description?: string;
+}
+
+// Update the AIOptions array definition to be more explicit
+const AIOptions: AIOption[] = [
   {
     value: "human",
     label: "Human Player",
-    icon: "👤"
+    icon: "👤",
+    description: "You control this player"
   },
   {
     value: "gpt-4o",
@@ -45,10 +55,9 @@ const AIOptions = [
     description: "xAI's newest model"
   },
   {
-    value: "gemini-pro",
-    label: "Gemini Pro",
-    icon: <SiGooglegemini className="w-5 h-5 text-[#4285f4]" />,
-    description: "Google's most capable model"
+    label: "Gemini",
+    value: "gemini-1.5-pro",
+    icon: SiGooglegemini
   }
 ];
 
@@ -150,6 +159,9 @@ export default function Home() {
       ? currentTeam.spymaster
       : index !== undefined ? currentTeam.operatives[index] : undefined;
 
+    // Find the matching option
+    const selectedOption = AIOptions.find(opt => opt.value === value);
+
     return (
       <div className="space-y-2">
         <label className="text-sm font-medium capitalize">
@@ -163,10 +175,15 @@ export default function Home() {
         >
           <SelectTrigger className="w-full bg-white">
             <SelectValue placeholder={`Select ${role}`}>
-              {value && (
+              {selectedOption && (
                 <div className="flex items-center space-x-2">
-                  {AIOptions.find(opt => opt.value === value)?.icon}
-                  <span>{AIOptions.find(opt => opt.value === value)?.label}</span>
+                  {typeof selectedOption.icon === 'string' ? (
+                    <span>{selectedOption.icon}</span>
+                  ) : (
+                    // Make sure to render React elements properly
+                    selectedOption.icon
+                  )}
+                  <span>{selectedOption.label}</span>
                 </div>
               )}
             </SelectValue>
@@ -179,10 +196,15 @@ export default function Home() {
                 className="flex items-center space-x-2 p-3 cursor-pointer hover:bg-gray-50"
               >
                 <div className="flex items-center space-x-3">
-                  <span className="text-xl">{typeof option.icon === 'string' ? option.icon : option.icon}</span>
+                  {/* Handle both string icons and React component icons */}
+                  <span className="text-xl">
+                    {typeof option.icon === 'string' ? option.icon : option.icon}
+                  </span>
                   <div>
                     <div className="font-medium">{option.label}</div>
-                    <div className="text-xs text-gray-500">{option.description}</div>
+                    {option.description && (
+                      <div className="text-xs text-gray-500">{option.description}</div>
+                    )}
                   </div>
                 </div>
               </SelectItem>

@@ -1,22 +1,30 @@
-import { games, type Game, type InsertGame, type TeamDiscussionEntry, type ConsensusVote, type GameHistoryEntry } from "@shared/schema";
+import { type Game, type InsertGame, type TeamDiscussionEntry, type ConsensusVote, type GameHistoryEntry } from "@shared/schema";
 
 export interface IStorage {
   createGame(game: InsertGame): Promise<Game>;
   getGame(id: number): Promise<Game | undefined>;
   updateGame(id: number, updates: Partial<Game>): Promise<Game>;
+  deleteGame(id: number): Promise<boolean>;
 }
 
 export class MemStorage implements IStorage {
   private games: Map<number, Game>;
-  private currentId: number;
 
   constructor() {
     this.games = new Map();
-    this.currentId = 1;
+  }
+
+  private generateGameId(): number {
+    // Generate a 6-digit number between 100000 and 999999
+    let gameId: number;
+    do {
+      gameId = Math.floor(Math.random() * 900000) + 100000;
+    } while (this.games.has(gameId));
+    return gameId;
   }
 
   async createGame(insertGame: InsertGame): Promise<Game> {
-    const id = this.currentId++;
+    const id = this.generateGameId();
     const now = new Date();
     const game: Game = {
       ...insertGame,
@@ -43,26 +51,37 @@ export class MemStorage implements IStorage {
     return {
       ...game,
       teamDiscussion: Array.isArray(game.teamDiscussion) 
-        ? game.teamDiscussion.map(entry => 
-            typeof entry === 'string' ? JSON.parse(entry) as TeamDiscussionEntry : entry
+        ? game.teamDiscussion.map((entry: unknown) => 
+            typeof entry === 'string' ? JSON.parse(entry) as TeamDiscussionEntry : entry as TeamDiscussionEntry
           )
         : [],
       gameHistory: Array.isArray(game.gameHistory)
-        ? game.gameHistory.map(entry =>
-            typeof entry === 'string' ? JSON.parse(entry) as GameHistoryEntry : entry
+        ? game.gameHistory.map((entry: unknown) =>
+            typeof entry === 'string' ? JSON.parse(entry) as GameHistoryEntry : entry as GameHistoryEntry
           )
         : [],
       consensusVotes: Array.isArray(game.consensusVotes)
-        ? game.consensusVotes.map(entry =>
-            typeof entry === 'string' ? JSON.parse(entry) as ConsensusVote : entry
+        ? game.consensusVotes.map((entry: unknown) =>
+            typeof entry === 'string' ? JSON.parse(entry) as ConsensusVote : entry as ConsensusVote
           )
         : []
     };
   }
 
   async updateGame(id: number, updates: Partial<Game>): Promise<Game> {
+    console.log('Updating game storage, current updates:', updates);
     const game = await this.getGame(id);
-    if (!game) throw new Error("Game not found");
+    if (!game) {
+      throw new Error('Game not found');
+    }
+
+    if (updates.teamDiscussion) {
+      console.log('Updating team discussion:', {
+        current: game.teamDiscussion?.length,
+        new: updates.teamDiscussion.length,
+        combined: [...(game.teamDiscussion || []), ...updates.teamDiscussion].length
+      });
+    }
 
     const updatedGame = {
       ...game,
@@ -72,8 +91,16 @@ export class MemStorage implements IStorage {
       consensusVotes: updates.consensusVotes || game.consensusVotes
     };
 
+    console.log('Final updated game discussion count:', updatedGame.teamDiscussion?.length);
     this.games.set(id, updatedGame);
     return updatedGame;
+  }
+
+  async deleteGame(id: number): Promise<boolean> {
+    if (!this.games.has(id)) {
+      return false;
+    }
+    return this.games.delete(id);
   }
 }
 
