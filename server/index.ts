@@ -1,3 +1,21 @@
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Get the directory name of the current module
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load environment variables from the root .env file
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
+// Make sure they're loaded correctly
+console.log('Environment loaded:', {
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY?.substring(0, 5) + '...',
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY?.substring(0, 5) + '...',
+  GOOGLE_API_KEY: process.env.GOOGLE_API_KEY?.substring(0, 5) + '...'
+});
+
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
@@ -58,8 +76,30 @@ app.use((req, res, next) => {
 
   // ALWAYS serve the app on port 5000
   // this serves both the API and the client
-  const PORT = 5000;
+  const PORT = 3000;
   server.listen(PORT, "0.0.0.0", () => {
     log(`serving on port ${PORT}`);
   });
 })();
+
+let isShuttingDown = false;
+
+process.on('SIGTERM', async () => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log('Received SIGTERM. Performing graceful shutdown...');
+  // Add a delay to allow requests to complete
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log('Received SIGINT. Performing graceful shutdown...');
+  // Add a delay to allow requests to complete
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  process.exit(0);
+});

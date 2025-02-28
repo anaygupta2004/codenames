@@ -1,18 +1,24 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { type CardType, type GameHistoryEntry, type TeamDiscussionEntry, type ConsensusVote } from "@shared/schema";
+import { b } from '../../baml_client'
+import { type GameHistoryEntry, type TeamDiscussionEntry, type ConsensusVote } from "@shared/schema";
 
-// the newest OpenAI model is "gpt-4o" which was released May 13, 2024
-// the newest Anthropic model is "claude-3-5-sonnet-20241022" which was released October 22, 2024
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || '');
 
-export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | "gemini-pro";
+let openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || 'dummy-key-for-dev'
+});
+
+let anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY || 'dummy-key-for-dev'
+});
+
+let genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || 'dummy-key-for-dev');
+
+export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | "gemini-1.5-pro";
 export type AIService = "openai" | "anthropic" | "xai" | "google";
 
-const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-pro"];
+const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-1.5-pro"];
 
 function validateModel(model: string): AIModel {
   if (!VALID_MODELS.includes(model)) {
@@ -25,127 +31,165 @@ function getAIService(model: AIModel): AIService {
   if (model === "gpt-4o") return "openai";
   if (model === "claude-3-5-sonnet-20241022") return "anthropic";
   if (model === "grok-2-1212") return "xai";
-  if (model === "gemini-pro") return "google";
+  if (model === "gemini-1.5-pro") return "google";
   throw new Error(`Invalid AI model: ${model}`);
 }
 
-// Add Gemini functions
-async function getGeminiClue(prompt: string): Promise<{ word: string; number: number }> {
-  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
-  try {
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-    });
-    const response = result.response;
-    const text = response.text();
-
-    try {
-      const parsed = JSON.parse(text);
-      if (!parsed.word || typeof parsed.number !== 'number') {
-        throw new Error("Invalid response format");
-      }
-      return parsed;
-    } catch (error) {
-      console.error("Error parsing Gemini response:", error);
-      throw new Error("Failed to parse Gemini response");
-    }
-  } catch (error) {
-    console.error("Error in Gemini clue generation:", error);
-    throw new Error("Failed to generate clue with Gemini");
-  }
+// Add sanitization helper
+function sanitizeJsonResponse(text: string): string {
+  return text.replace(/[\x00-\x1F\x7F]/g, "");
 }
 
-async function getGeminiGuess(prompt: string): Promise<{ guess: string }> {
-  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
-  try {
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-    });
-    const response = result.response;
-    const text = response.text().trim();
-
-    try {
-      const parsed = JSON.parse(text);
-      if (!parsed.guess || typeof parsed.guess !== 'string') {
-        throw new Error("Invalid response format");
-      }
-      return parsed;
-    } catch (error) {
-      console.error("Error parsing Gemini guess response:", error);
-      throw new Error("Failed to parse Gemini guess response");
-    }
-  } catch (error) {
-    console.error("Error in Gemini guess generation:", error);
-    throw new Error("Failed to generate guess with Gemini");
-  }
-}
-
+// Update Gemini functions
 async function getGeminiDiscussion(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
-  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
   try {
     const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: [{ 
+        role: "user", 
+        parts: [{ 
+          text: `${prompt}\n\nRespond ONLY with a JSON object in this format:
+{
+  "message": "your analysis of the clue and suggested words",
+  "confidence": 0.8,
+  "suggestedWord": "WORD"
+}`
+        }] 
+      }],
+      generationConfig: {
+        temperature: 0.7,
+        topP: 0.8,
+        topK: 40,
+      }
     });
-    const response = result.response;
-    const text = response.text().trim();
-
+    const text = result.response.text().trim();
+    const sanitizedText = sanitizeJsonResponse(text);
+    
     try {
-      const parsed = JSON.parse(text);
-      if (!parsed.message || typeof parsed.confidence !== 'number') {
+      const parsed = JSON.parse(sanitizedText);
+      if (!parsed.message || typeof parsed.confidence !== "number") {
         throw new Error("Invalid response format");
       }
+      return parsed;
+    } catch (parseError) {
+      console.error("JSON parse error:", parseError);
+      // If parsing fails, try to extract JSON from the response
+      const jsonMatch = sanitizedText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        // Clean up any trailing commas that might cause parse errors
+        const cleanJson = jsonMatch[0].replace(/,(\s*[}\]])/g, '$1');
+        try {
+          const extracted = JSON.parse(cleanJson);
+          if (extracted.message && typeof extracted.confidence === "number") {
+            return extracted;
+          }
+        } catch (e) {
+          // If we still can't parse it, throw the original error
+          throw parseError;
+        }
+      }
+      // If all else fails, return a formatted error response
       return {
-        message: parsed.message,
-        confidence: Math.max(0, Math.min(1, parsed.confidence)),
-        suggestedWord: parsed.suggestedWord
-      };
-    } catch (error) {
-      console.error("Error parsing Gemini discussion response:", error);
-      return {
-        message: "I encountered an error processing the response. Let's proceed with the team's consensus.",
-        confidence: 0.5
+        message: "Error processing response",
+        confidence: 0,
+        suggestedWord: undefined
       };
     }
   } catch (error) {
     console.error("Error in Gemini discussion:", error);
     return {
-      message: "I encountered a technical issue. Let's continue our discussion based on the team's input.",
-      confidence: 0.5
+      message: "Failed to get response from Gemini",
+      confidence: 0,
+      suggestedWord: undefined
     };
   }
 }
 
-async function getGeminiVote(prompt: string): Promise<{ approved: boolean; reason: string }> {
-  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
+async function getGeminiGuess(prompt: string): Promise<{ guess: string }> {
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
   try {
     const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: [{ 
+        role: "user", 
+        parts: [{ 
+          text: `${prompt}\n\nRespond ONLY with a JSON object in this format:
+{
+  "guess": "THE_WORD_YOU_WANT_TO_GUESS"
+}`
+        }] 
+      }],
     });
-    const response = result.response;
-    const text = response.text().trim();
-
+    const text = result.response.text().trim();
+    const sanitizedText = sanitizeJsonResponse(text);
+    
     try {
-      const parsed = JSON.parse(text);
-      if (typeof parsed.approved !== 'boolean' || typeof parsed.reason !== 'string') {
+      const parsed = JSON.parse(sanitizedText);
+      if (!parsed.guess || typeof parsed.guess !== "string") {
         throw new Error("Invalid response format");
       }
       return parsed;
-    } catch (error) {
-      console.error("Error parsing Gemini vote response:", error);
+    } catch (parseError) {
+      console.error("JSON parse error:", parseError);
+      // Try to extract JSON if response contains explanation text
+      const jsonMatch = sanitizedText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const extracted = JSON.parse(jsonMatch[0]);
+        if (extracted.guess && typeof extracted.guess === "string") {
+          return extracted;
+        }
+      }
+      throw new Error("Failed to parse Gemini guess response");
+    }
+  } catch (error) {
+    console.error("Error in Gemini guess:", error);
+    throw new Error("Failed to get guess from Gemini");
+  }
+}
+
+async function getGeminiVote(prompt: string): Promise<{ approved: boolean; reason: string }> {
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+  try {
+    const result = await model.generateContent({
+      contents: [{ 
+        role: "user", 
+        parts: [{ 
+          text: `${prompt}\n\nRespond ONLY with a JSON object in this format:
+{
+  "approved": true or false,
+  "reason": "explanation for your decision"
+}`
+        }] 
+      }],
+    });
+    const text = result.response.text().trim();
+    const sanitizedText = sanitizeJsonResponse(text);
+    
+    try {
+      const parsed = JSON.parse(sanitizedText);
+      if (typeof parsed.approved !== "boolean" || typeof parsed.reason !== "string") {
+        throw new Error("Invalid response format");
+      }
+      return parsed;
+    } catch (parseError) {
+      console.error("JSON parse error:", parseError);
+      // Try to extract JSON if response contains explanation text
+      const jsonMatch = sanitizedText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const extracted = JSON.parse(jsonMatch[0]);
+        if (typeof extracted.approved === "boolean" && typeof extracted.reason === "string") {
+          return extracted;
+        }
+      }
       return {
         approved: false,
-        reason: "Due to technical issues, I'm abstaining from this vote."
+        reason: "Error processing vote response"
       };
     }
   } catch (error) {
     console.error("Error in Gemini vote:", error);
     return {
       approved: false,
-      reason: "Unable to process voting decision due to technical issues."
+      reason: "Error processing vote response"
     };
   }
 }
@@ -173,10 +217,10 @@ export async function getSpymasterClue(
   opposingWords: string[],
   assassinWord: string,
   gameHistory: GameHistoryEntry[]
-): Promise<{ word: string; number: number }> {
+): Promise<{ word: string; number: number; reasoning?: string }> {
   const validatedModel = validateModel(model as string);
 
-  // Filter active clues (clues with remaining unguessed words)
+// Filter active clues (clues with remaining unguessed words)
   const activeClues = gameHistory
     .filter(entry => entry.type === "clue" && entry.content)
     .map(clueEntry => {
@@ -209,12 +253,17 @@ Game State:
 Strategic Objectives:
 1. Prioritize clues that connect multiple words efficiently
 2. Consider word relationships and semantic connections
-3. Avoid clues that could lead to opponent words or assassin
-4. Balance risk vs reward based on game state
-5. Build on previous successful clue patterns
-6. Consider the current score and adjust strategy accordingly
+3. Balance risk vs reward based on game state
+4. Build on previous successful clue patterns
+5. Consider the current score and adjust strategy accordingly
 
-Provide your clue in JSON format: { "word": "clue", "number": count }`;
+
+Make sure to consider the words that have already been guessed and the words that are still available. 
+Be sure to consider the words that are opposing team words, neutral words, and the assassin word. 
+
+Think very deeply about your choice. DO NOT GIVE CLUE THAT IS ASSOCIATED WITH THE ASSASSIN WORD & ALREADY GUESSED WORDS & OPPONENTS WORDS.
+
+Provide your clue in JSON format: { "word": "clue", "number": count "reasoning": "your reasoning for your choice" }`;
 
   switch (getAIService(validatedModel)) {
     case "openai":
@@ -301,150 +350,129 @@ export async function discussAndVote(
   model: AIModel,
   team: "red" | "blue",
   words: string[],
-  clue: { word: string; number: number } | undefined,
+  clue: { word: string; number: number },
   teamDiscussion: TeamDiscussionEntry[],
   gameHistory: GameHistoryEntry[],
   revealedCards: string[]
 ): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
-  if (!clue) {
-    throw new Error("Invalid clue format provided to discussAndVote");
-  }
+  // Get recent game context
+  const recentClues = gameHistory
+    .filter(h => h.type === 'clue')
+    .slice(-3)
+    .map(h => h.content);
 
-  const availableWords = words.filter(word => !revealedCards.includes(word));
-  const teamHistory = gameHistory.filter(entry => entry.turn === team);
-
-  // Track clue success rates for better decision making
-  const cluePerformance = teamHistory
-    .filter(entry => entry.type === "clue" && entry.content)
-    .map(clueEntry => {
-      const relatedGuesses = teamHistory
-        .filter(g => g.type === "guess" && g.relatedClue === clueEntry.content);
-      const successRate = relatedGuesses.filter(g => g.result === "correct").length / relatedGuesses.length;
-      return {
-        clue: clueEntry.content,
-        successRate: isNaN(successRate) ? 0 : successRate,
-        guesses: relatedGuesses.map(g => `${g.word || ''} (${g.result})`)
-      };
-    });
-
-  // Sort discussions by timestamp for conversation flow
   const recentDiscussion = teamDiscussion
-    .filter(entry => entry.team === team)
-    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-    .map(entry => {
-      const modelInfo = entry.player ? getModelInfo(entry.player as AIModel) : null;
-      return `${modelInfo?.name || 'Unknown'}: ${entry.message} ${
-        entry.suggestedWord ? `[Suggests: ${entry.suggestedWord}]` : ''
-      } (confidence: ${entry.confidence})`;
-    })
-    .join("\n");
+    .slice(-5)
+    .map(d => `${d.player}: ${d.message}`)
+    .join('\n');
 
-  const prompt = `${GAME_RULES}
+  const availableWords = words.filter(w => !revealedCards.includes(w));
 
-Current Game Discussion:
-Team: ${team}
-Current Clue: "${clue.word}" (looking for ${clue.number} words)
-Available Words: ${availableWords.join(", ")}
+  const prompt = `You are playing Codenames as a ${team} team player.
+Your team received the clue: "${clue.word}" (${clue.number})
 
-Team Performance:
-${cluePerformance.map(c =>
-    `Clue "${c.clue}": Success rate ${(c.successRate * 100).toFixed(1)}%
-     Guesses: ${c.guesses.join(", ")}`
-  ).join("\n")}
+Game Context:
+- Previous clues: ${recentClues.join(', ')}
+- Available words: ${availableWords.join(', ')}
+- Words revealed so far: ${revealedCards.join(', ')}
 
-Recent Team Discussion:
+Recent team discussion:
 ${recentDiscussion}
 
-As ${getModelDisplayName(model)}, analyze and contribute:
-1. Review previous guesses and their outcomes
-2. Consider teammates' suggestions and confidence levels
-3. Evaluate word connections to the clue
-4. Consider both semantic and strategic relationships
-5. Suggest words with confidence levels:
-   - High (>0.8): Strong connection, minimal risk
-   - Medium (0.6-0.8): Possible connection, some risk
-   - Low (<0.6): Save for later or skip
+As an AI player, engage in natural discussion with your teammates about the clue.
+Consider:
+1. How the current clue might connect to multiple words
+2. What previous clues and guesses tell us about word associations
+3. The risk level of each potential guess
+4. Strategic implications (e.g., avoiding opponent's words)
 
-Respond in JSON format: {
-  "message": "your analysis and strategic thoughts",
+Respond as a helpful teammate would, explaining your reasoning naturally.
+Include JSON with your analysis: {
+  "message": "your conversational response",
   "confidence": number between 0-1,
-  "suggestedWord": "word_choice" // Only if confidence > 0.7
+  "suggestedWord": "your suggested word if confident"
 }`;
 
-  switch (getAIService(model)) {
-    case "openai":
+  switch (model) {
+    case "gpt-4o":
       return await getOpenAIDiscussion(prompt);
-    case "anthropic":
+    case "claude-3-5-sonnet-20241022":
       return await getAnthropicDiscussion(prompt);
-    case "xai":
+    case "grok-2-1212":
       return await getXAIDiscussion(prompt);
-    case "google":
+    case "gemini-1.5-pro":
       return await getGeminiDiscussion(prompt);
     default:
-      throw new Error("Invalid AI model");
+      throw new Error(`Invalid AI model: ${model}`);
   }
+}
+
+// Helper to format discussion messages more naturally
+export function formatDiscussionMessage(
+  model: AIModel,
+  message: string,
+  confidence: number,
+  suggestedWord?: string
+): string {
+  const displayName = getModelDisplayName(model);
+  let formattedMsg = message;
+
+  if (suggestedWord && confidence > 0.7) {
+    formattedMsg += ` I suggest "${suggestedWord}" (${(confidence * 100).toFixed(0)}% confident)`;
+  } else if (suggestedWord) {
+    formattedMsg += ` Maybe "${suggestedWord}"? (${(confidence * 100).toFixed(0)}% confident)`;
+  }
+
+  return formattedMsg;
 }
 
 export async function makeConsensusVote(
   model: AIModel,
   team: "red" | "blue",
-  proposedWord: string,
-  teamDiscussion: TeamDiscussionEntry[],
+  word: string,
+  teamDiscussion: TeamDiscussionEntry[]
 ): Promise<{ approved: boolean; reason: string }> {
-  const recentDiscussion = teamDiscussion
-    .filter(entry => entry.team === team)
-    .map(entry => `${entry.player}: ${entry.message} (confidence: ${entry.confidence})`)
-    .join("\n");
+  const prompt = `You are playing Codenames. The team is discussing whether to guess "${word}".
+Team discussion: ${JSON.stringify(teamDiscussion)}
 
-  const prompt = `As a Codenames AI player, decide whether to approve the proposed guess:
+Should we guess this word? Respond in JSON format with:
+{
+  "approved": boolean,
+  "reason": "explanation for your decision"
+}`;
 
-Proposed word: ${proposedWord}
-
-Team Discussion:
-${recentDiscussion}
-
-Consider:
-1. Team consensus level
-2. Confidence scores
-3. Potential risks
-
-Respond in JSON format: { "approved": boolean, "reason": "explanation of your decision" }`;
-
-  switch (getAIService(model)) {
-    case "openai":
+  switch (model) {
+    case "gpt-4o":
       return await getOpenAIVote(prompt);
-    case "anthropic":
+    case "claude-3-5-sonnet-20241022":
       return await getAnthropicVote(prompt);
-    case "xai":
+    case "grok-2-1212":
       return await getXAIVote(prompt);
-    case "google":
+    case "gemini-1.5-pro":
       return await getGeminiVote(prompt);
     default:
-      throw new Error("Invalid AI model");
+      throw new Error(`Invalid AI model: ${model}`);
   }
 }
 
-async function getOpenAIClue(prompt: string): Promise<{ word: string; number: number }> {
+async function getOpenAIClue(prompt: string): Promise<{ word: string; number: number; reasoning?: string }> {
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
-
-  const content = response.choices[0].message.content;
-  if (!content) {
-    throw new Error("No response from OpenAI");
-  }
-
-  const result = JSON.parse(content) as { word: string; number: number };
-  if (!result.word || typeof result.number !== 'number') {
-    throw new Error("Invalid response format from OpenAI");
-  }
-
-  return result;
+  
+  const content = sanitizeJsonResponse(response.choices[0].message.content || "");
+  const result = JSON.parse(content);
+  
+  return {
+    word: result.word,
+    number: result.number,
+    reasoning: result.reasoning
+  };
 }
 
-async function getAnthropicClue(prompt: string): Promise<{ word: string; number: number }> {
+async function getAnthropicClue(prompt: string): Promise<{ word: string; number: number; reasoning?: string }> {
   const response = await anthropic.messages.create({
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 1024,
@@ -476,17 +504,21 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
       throw new Error("Invalid response format from Anthropic");
     }
 
-    return result;
+    return {
+      word: result.word,
+      number: result.number,
+      reasoning: result.reasoning
+    };
   } catch (error) {
     console.error("Error parsing Anthropic response:", error);
     throw new Error("Failed to parse Anthropic response");
   }
 }
 
-async function getXAIClue(prompt: string): Promise<{ word: string; number: number }> {
+async function getXAIClue(prompt: string): Promise<{ word: string; number: number; reasoning?: string }> {
   const openaiXAI = new OpenAI({
-    baseURL: "https://api.x.ai/v1",
-    apiKey: process.env.XAI_API_KEY
+    baseURL: "https://api.x.ai/v1/chat/completions",
+    apiKey: "***REMOVED***"
   });
 
   const response = await openaiXAI.chat.completions.create({
@@ -566,7 +598,7 @@ async function getAnthropicGuess(prompt: string): Promise<{ guess: string }> {
 async function getXAIGuess(prompt: string): Promise<{ guess: string }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: process.env.XAI_API_KEY
+    apiKey: "***REMOVED***"
   });
 
   const response = await openaiXAI.chat.completions.create({
@@ -650,7 +682,7 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
 async function getXAIDiscussion(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: process.env.XAI_API_KEY
+    apiKey: "***REMOVED***"
   });
 
   const response = await openaiXAI.chat.completions.create({
@@ -734,7 +766,7 @@ async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; re
 async function getXAIVote(prompt: string): Promise<{ approved: boolean; reason: string }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: process.env.XAI_API_KEY
+    apiKey: "***REMOVED***"
   });
 
   const response = await openaiXAI.chat.completions.create({
@@ -760,7 +792,7 @@ function getModelDisplayName(model: AIModel): string {
       return "Claude";
     case "grok-2-1212":
       return "Grok";
-    case "gemini-pro":
+    case "gemini-1.5-pro":
       return "Gemini";
     default:
       return "Unknown AI";
@@ -775,3 +807,58 @@ function getModelInfo(model: AIModel): { name: string; service: AIService } {
     service
   };
 }
+
+// Add memory of past successful/failed guesses
+const teamMemory = new Map<string, {
+  successfulGuesses: string[];
+  failedGuesses: string[];
+  clueHistory: { clue: string; number: number; success: boolean }[];
+}>();
+
+export function updateTeamMemory(
+  team: string,
+  clue: { word: string; number: number },
+  guess: string,
+  success: boolean
+) {
+  const memory = teamMemory.get(team) || {
+    successfulGuesses: [],
+    failedGuesses: [],
+    clueHistory: []
+  };
+
+  if (success) {
+    memory.successfulGuesses.push(guess);
+  } else {
+    memory.failedGuesses.push(guess);
+  }
+
+  memory.clueHistory.push({
+    clue: clue.word,
+    number: clue.number,
+    success
+  });
+
+  teamMemory.set(team, memory);
+}
+
+async function getGeminiClue(prompt: string): Promise<{ word: string; number: number }> {
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+  try {
+    const result = await model.generateContent({
+      contents: [{ 
+        role: "user", 
+        parts: [{ text: `${prompt}\n\nRespond ONLY with a JSON object in this format:\n{\n  "word": "clue",\n  "number": count\n}` }] 
+      }],
+    });
+    const text = result.response.text().trim();
+    const sanitizedText = sanitizeJsonResponse(text);
+    return JSON.parse(sanitizedText);
+  } catch (error) {
+    console.error("Error in Gemini clue:", error);
+    throw new Error("Failed to get clue from Gemini");
+  }
+}
+
+// Export only the clients that aren't already exported
+export { openai, anthropic, genAI };
