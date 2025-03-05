@@ -635,129 +635,138 @@ export default function GamePage() {
   // Add these missing functions after your other helper functions
   const renderTeamDiscussion = () => {
     if (!game) return null;
-    
-    const teamDiscussion = game.teamDiscussion || [];
-    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
 
-    // Extract voting-related messages
-    const votingMessages = teamDiscussion.filter(entry => 
-      entry.isVoting === true || entry.voteType
-    );
-    
-    // Get the most recent voting entry if it exists
-    const activeVote = votingMessages.length > 0 
-      ? votingMessages[votingMessages.length - 1] 
-      : null;
-    
-    const suggestedWord = activeVote?.suggestedWord || activeVote?.suggestedWords?.[0];
-    
+    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    const teamColor = currentTeam === "red" ? "red" : "blue";
+    const discussions = (game.teamDiscussion || []) as TeamDiscussionEntry[];
+
+    const sortedDiscussions = discussions
+      .filter(entry => entry.team === currentTeam)
+      .sort((a, b) => a.timestamp - b.timestamp);
+
     return (
-      <Card className="h-[400px] overflow-hidden flex flex-col">
-        <CardContent className="flex-1 p-4 flex flex-col h-full">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-bold text-lg">Team Discussion</h3>
+      <Card className={`border-${teamColor}-500 border-2 shadow-md overflow-hidden`}>
+        <div className={`bg-${teamColor}-100 px-4 py-3 border-b flex justify-between items-center`}>
+          <h3 className={`font-bold text-lg text-${teamColor}-800`}>
+              Team Discussion
+            </h3>
             {isDiscussing && (
-              <div className="flex items-center text-amber-600">
-                <Clock className="w-4 h-4 mr-1" />
-                <span>{discussionTimer}s</span>
+            <div className="flex items-center gap-2 bg-white rounded-full px-3 py-1 shadow-sm">
+                <Clock className="w-4 h-4" />
+                <span className={`text-sm font-medium ${
+                  discussionTimer <= 10 ? 'text-red-500' : ''
+                }`}>
+                  {discussionTimer}s
+                </span>
+              {aiTurnInProgress.current && (
+                <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full animate-pulse ml-2">
+                  AIs thinking...
+                  </span>
+                )}
               </div>
             )}
           </div>
-          
-          {/* Voting UI */}
-          {activeVote && currentTeam === activeVote.team && (
-            <div className="bg-amber-50 border border-amber-200 rounded-md p-3 mb-4">
-              <div className="font-medium mb-2">
-                {activeVote.voteType === "continue" 
-                  ? "Vote to continue guessing?" 
-                  : "Should we end our turn?"}
-              </div>
-              
-              {suggestedWord && (
-                <div className="flex items-center mb-2">
-                  <span className="mr-2">Suggested word:</span>
-                  <span className="font-semibold bg-white px-2 py-1 rounded border">{suggestedWord}</span>
-                </div>
-              )}
-              
-              <div className="flex space-x-2 mt-3">
-                <Button 
-                  size="sm" 
-                  variant="default"
-                  className="bg-green-600 hover:bg-green-700"
-                  onClick={() => submitVote(activeVote.voteType === "continue" ? "continue" : "end_turn", true)}
-                >
-                  Yes
-                </Button>
-                <Button 
-                  size="sm" 
-                  variant="outline"
-                  onClick={() => submitVote(activeVote.voteType === "continue" ? "end_turn" : "continue", false)}
-                >
-                  No
-                </Button>
-              </div>
-            </div>
-          )}
-          
-          {/* Chat messages */}
-          <ScrollArea className="pr-4 flex-1">
-            <div className="space-y-4 pb-4">
-              {teamDiscussion
-                .filter(entry => entry.team === currentTeam && !entry.isVoting)
-                .map((entry, index) => {
-                  const isAI = entry.player !== 'Game' && entry.player !== 'human';
-                  const ModelIcon = isAI && AI_MODEL_INFO[entry.player as AIModel]?.Icon 
-                    ? AI_MODEL_INFO[entry.player as AIModel]?.Icon 
-                    : Bot;
-                  
-                  return (
-                    <div key={index} className="flex items-start gap-2">
-                      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center">
-                        {isAI ? (
-                          <ModelIcon className={`w-5 h-5 ${entry.player === "gemini-1.5-pro" ? "text-green-600" : ""}`} />
-                        ) : (
-                          entry.player === 'Game' ? 
-                            <Clock className="w-5 h-5 text-gray-500" /> : 
-                            <span className="text-sm">👤</span>
+
+        <ScrollArea className="h-[400px] p-4">
+            <div className="space-y-3">
+            {sortedDiscussions.length > 0 ? (
+              sortedDiscussions.map((entry, index) => {
+                const modelInfo = entry.player === "human" 
+                  ? { name: "You", Icon: () => <span>👤</span> }
+                  : (AI_MODEL_INFO[entry.player as AIModel] || {
+                  name: entry.player,
+                  Icon: Bot
+                    });
+                
+                const isHuman = entry.player === "human";
+
+                return (
+                  <div
+                    key={index}
+                    className={`flex ${isHuman ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div className={`max-w-[80%] rounded-2xl p-3 ${
+                      isHuman 
+                        ? 'bg-blue-600 text-white rounded-br-none' 
+                        : `bg-${teamColor}-100 text-${teamColor}-900 rounded-bl-none`
+                    }`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        {!isHuman && (typeof modelInfo.Icon === 'function' ? 
+                          <modelInfo.Icon className="w-4 h-4" /> : 
+                          modelInfo.Icon && <modelInfo.Icon className="w-4 h-4" />
                         )}
-                      </div>
-                      <div className="flex-1">
-                        <div className="font-medium">
-                          {isAI ? getModelDisplayName(entry.player as AIModel) : entry.player}
-                        </div>
-                        <div>{entry.message}</div>
-                      </div>
+                        <span className="font-medium text-sm">{modelInfo.name}</span>
+                        <span className="text-xs opacity-70 ml-auto">
+                          {entry.timestamp
+                            ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+                            : ""}
+                        </span>
                     </div>
-                  );
-                })}
+                      <p className="text-sm">{entry.message}</p>
+                      {entry.confidence !== undefined && entry.suggestedWord && (
+                        <div className="mt-2 text-xs font-medium p-1 rounded bg-white/20">
+                          Confidence: {Math.round(entry.confidence * 100)}% • 
+                          Suggests: <span className="font-bold">{entry.suggestedWord}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                {lastClue ? (
+                  <div>
+                    <p>Discussing clue: <strong>{lastClue.word} ({lastClue.number})</strong></p>
+                    <p className="mt-2 text-sm">Waiting for team members to respond...</p>
+                  </div>
+                ) : (
+                  <p>Waiting for spymaster to give a clue...</p>
+                )}
+              </div>
+            )}
             </div>
           </ScrollArea>
-          
-          {/* Input field for human players */}
-          {currentTeam === (game.redTurn ? "red" : "blue") && (
-            <div className="mt-4 flex gap-2">
-              <input
-                type="text"
-                value={discussionInput}
-                onChange={(e) => setDiscussionInput(e.target.value)}
-                placeholder="Type your thoughts..."
-                className="flex-1 border rounded px-3 py-2"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && discussionInput.trim()) {
-                    sendDiscussionMessage.mutate({});
-                  }
-                }}
-              />
-              <Button 
-                onClick={() => sendDiscussionMessage.mutate({})}
-                disabled={!discussionInput.trim()}
-              >
-                Send
-              </Button>
-            </div>
-          )}
-        </CardContent>
+
+        {/* Add discussion input for human players */}
+        <div className="p-3 border-t bg-gray-50">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={discussionInput}
+              onChange={(e) => setDiscussionInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendDiscussion()}
+              placeholder="Type your thoughts here..."
+              className="flex-1 p-2 rounded-full border focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              disabled={aiTurnInProgress.current || game.gameState?.includes("win")}
+            />
+            <Button 
+              onClick={sendDiscussion} 
+              disabled={aiTurnInProgress.current || game.gameState?.includes("win")}
+              className="rounded-full"
+              size="sm"
+            >
+              Send
+            </Button>
+          </div>
+        </div>
+
+        {/* Add a manual discussion trigger button */}
+        {!isDiscussing && lastClue && (
+          <div className="p-4 border-t bg-gray-50 flex justify-center">
+            <Button 
+              onClick={() => {
+                setIsDiscussing(true);
+                aiDiscussionTriggered.current = false;
+                processGameState();
+              }}
+              className={`bg-${teamColor}-500 hover:bg-${teamColor}-600 text-white`}
+              disabled={aiTurnInProgress.current || game.gameState?.includes("win")}
+            >
+              Discuss Clue: {lastClue.word} ({lastClue.number})
+            </Button>
+          </div>
+        )}
       </Card>
     );
   };
@@ -869,36 +878,6 @@ export default function GamePage() {
       default:
         return <Clock className="text-gray-400 w-5 h-5" />;
     }
-  };
-
-  // Add the vote submission function
-  const submitVote = (action: "continue" | "end_turn", isAgree: boolean) => {
-    if (!game) return;
-    
-    const vote = {
-      model: "human", 
-      team: game.currentTurn === "red_turn" ? "red" : "blue",
-      action: isAgree ? action : (action === "continue" ? "end_turn" : "continue")
-    };
-    
-    // Use your existing mutation to send the vote
-    apiRequest(`/api/games/${game.id}/meta/vote`, {
-      method: 'POST',
-      body: JSON.stringify(vote)
-    })
-    .then(response => {
-      toast({
-        title: "Vote submitted",
-        description: `You voted to ${isAgree ? action : (action === "continue" ? "end_turn" : "continue")} the turn`,
-      });
-    })
-    .catch(error => {
-      toast({
-        title: "Failed to submit vote",
-        description: error.message,
-        variant: "destructive"
-      });
-    });
   };
 
   // IMPORTANT: After all hooks are defined, then do conditional rendering

@@ -55,10 +55,9 @@ const AIOptions: AIOption[] = [
     description: "xAI's newest model"
   },
   {
+    label: "Gemini",
     value: "gemini-1.5-pro",
-    label: "Gemini 1.5 Pro",
-    icon: <SiGooglegemini className="text-green-600" />,
-    description: "Google's advanced multimodal model"
+    icon: SiGooglegemini
   }
 ];
 
