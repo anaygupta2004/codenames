@@ -27,10 +27,10 @@ export default class TypeBuilder {
     constructor() {
         this.tb = new _TypeBuilder({
           classes: new Set([
-            "GameAnalysis","GameState","Resume","SpymasterClue",
+            "GameAnalysis","GameState","Guess","GuessDiscussion","MetaDecision","Resume","SpymasterClue",
           ]),
           enums: new Set([
-            
+            "ConsensusLevel","Decision","Risk",
           ]),
           runtime: DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME
         });

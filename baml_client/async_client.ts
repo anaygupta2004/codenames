@@ -20,7 +20,7 @@ import { toBamlError, BamlStream } from "@boundaryml/baml"
 import type { Checked, Check, RecursivePartialNull as MovedRecursivePartialNull } from "./types"
 import type { partial_types } from "./partial_types"
 import type * as types from "./types"
-import type {GameAnalysis, GameState, Resume, SpymasterClue} from "./types"
+import type {ConsensusLevel, Decision, GameAnalysis, GameState, Guess, GuessDiscussion, MetaDecision, Resume, Risk, SpymasterClue} from "./types"
 import type TypeBuilder from "./type_builder"
 import { DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_CTX, DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME } from "./globals"
 
@@ -65,6 +65,26 @@ export class BamlAsyncClient {
     }
   }
   
+  async DetermineNextAction(
+      state: GameState,currentClue: SpymasterClue,previousGuesses: Guess[],previousDiscussion: GuessDiscussion,
+      __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
+  ): Promise<MetaDecision> {
+    try {
+      const raw = await this.runtime.callFunction(
+        "DetermineNextAction",
+        {
+          "state": state,"currentClue": currentClue,"previousGuesses": previousGuesses,"previousDiscussion": previousDiscussion
+        },
+        this.ctx_manager.cloneContext(),
+        __baml_options__?.tb?.__tb(),
+        __baml_options__?.clientRegistry,
+      )
+      return raw.parsed(false) as MetaDecision
+    } catch (error) {
+      throw toBamlError(error);
+    }
+  }
+  
   async ExtractResume(
       resume: string,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
@@ -80,6 +100,26 @@ export class BamlAsyncClient {
         __baml_options__?.clientRegistry,
       )
       return raw.parsed(false) as Resume
+    } catch (error) {
+      throw toBamlError(error);
+    }
+  }
+  
+  async FinalizeGuess(
+      state: GameState,discussion: GuessDiscussion,
+      __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
+  ): Promise<Guess> {
+    try {
+      const raw = await this.runtime.callFunction(
+        "FinalizeGuess",
+        {
+          "state": state,"discussion": discussion
+        },
+        this.ctx_manager.cloneContext(),
+        __baml_options__?.tb?.__tb(),
+        __baml_options__?.clientRegistry,
+      )
+      return raw.parsed(false) as Guess
     } catch (error) {
       throw toBamlError(error);
     }
@@ -106,14 +146,14 @@ export class BamlAsyncClient {
   }
   
   async ValidateGuess(
-      word: string,clue: SpymasterClue,state: GameState,model: string,
+      guess: Guess,clue: SpymasterClue,state: GameState,discussion: GuessDiscussion,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
   ): Promise<GameAnalysis> {
     try {
       const raw = await this.runtime.callFunction(
         "ValidateGuess",
         {
-          "word": word,"clue": clue,"state": state,"model": model
+          "guess": guess,"clue": clue,"state": state,"discussion": discussion
         },
         this.ctx_manager.cloneContext(),
         __baml_options__?.tb?.__tb(),
@@ -157,6 +197,32 @@ class BamlStreamClient {
     }
   }
   
+  DetermineNextAction(
+      state: GameState,currentClue: SpymasterClue,previousGuesses: Guess[],previousDiscussion: GuessDiscussion,
+      __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
+  ): BamlStream<partial_types.MetaDecision, MetaDecision> {
+    try {
+      const raw = this.runtime.streamFunction(
+        "DetermineNextAction",
+        {
+          "state": state,"currentClue": currentClue,"previousGuesses": previousGuesses,"previousDiscussion": previousDiscussion
+        },
+        undefined,
+        this.ctx_manager.cloneContext(),
+        __baml_options__?.tb?.__tb(),
+        __baml_options__?.clientRegistry,
+      )
+      return new BamlStream<partial_types.MetaDecision, MetaDecision>(
+        raw,
+        (a): partial_types.MetaDecision => a,
+        (a): MetaDecision => a,
+        this.ctx_manager.cloneContext(),
+      )
+    } catch (error) {
+      throw toBamlError(error);
+    }
+  }
+  
   ExtractResume(
       resume: string,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
@@ -176,6 +242,32 @@ class BamlStreamClient {
         raw,
         (a): partial_types.Resume => a,
         (a): Resume => a,
+        this.ctx_manager.cloneContext(),
+      )
+    } catch (error) {
+      throw toBamlError(error);
+    }
+  }
+  
+  FinalizeGuess(
+      state: GameState,discussion: GuessDiscussion,
+      __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
+  ): BamlStream<partial_types.Guess, Guess> {
+    try {
+      const raw = this.runtime.streamFunction(
+        "FinalizeGuess",
+        {
+          "state": state,"discussion": discussion
+        },
+        undefined,
+        this.ctx_manager.cloneContext(),
+        __baml_options__?.tb?.__tb(),
+        __baml_options__?.clientRegistry,
+      )
+      return new BamlStream<partial_types.Guess, Guess>(
+        raw,
+        (a): partial_types.Guess => a,
+        (a): Guess => a,
         this.ctx_manager.cloneContext(),
       )
     } catch (error) {
@@ -210,14 +302,14 @@ class BamlStreamClient {
   }
   
   ValidateGuess(
-      word: string,clue: SpymasterClue,state: GameState,model: string,
+      guess: Guess,clue: SpymasterClue,state: GameState,discussion: GuessDiscussion,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
   ): BamlStream<partial_types.GameAnalysis, GameAnalysis> {
     try {
       const raw = this.runtime.streamFunction(
         "ValidateGuess",
         {
-          "word": word,"clue": clue,"state": state,"model": model
+          "guess": guess,"clue": clue,"state": state,"discussion": discussion
         },
         undefined,
         this.ctx_manager.cloneContext(),
