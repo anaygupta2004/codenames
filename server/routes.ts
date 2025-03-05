@@ -66,79 +66,6 @@ function cleanupGame(gameId: number) {
   }
 }
 
-// Helper function to handle guesses from AI teams
-async function handleGuess(gameId: number, team: string, word: string): Promise<"correct" | "wrong" | "assassin"> {
-  const game = await storage.getGame(gameId);
-  if (!game) throw new Error("Game not found");
-  
-  // Skip if word is already revealed
-  if (game.revealedCards?.includes(word)) {
-    return "wrong"; // Treat as wrong guess if word is already revealed
-  }
-  
-  // Update revealed cards
-  const newRevealedCards = [...(game.revealedCards || []), word];
-  
-  // Determine the result of the guess
-  let result: "correct" | "wrong" | "assassin";
-  let updates: any = { revealedCards: newRevealedCards };
-  
-  if (word === game.assassin) {
-    result = "assassin";
-    updates.gameState = team === "red" ? "blue_win" : "red_win";
-  } else if (
-    (team === "red" && game.redTeam.includes(word)) ||
-    (team === "blue" && game.blueTeam.includes(word))
-  ) {
-    result = "correct";
-    if (game.redTeam.includes(word)) {
-      updates.redScore = (game.redScore || 0) + 1;
-    } else if (game.blueTeam.includes(word)) {
-      updates.blueScore = (game.blueScore || 0) + 1;
-    }
-  } else {
-    result = "wrong";
-    updates.currentTurn = team === "red" ? "blue_turn" : "red_turn";
-  }
-  
-  // Get the latest clue to reference in history
-  const clueContent = game.gameHistory?.filter(h => h.type === "clue")?.pop()?.content || "";
-  
-  // Create the history entry
-  const historyEntry = {
-    type: "guess",
-    turn: team,
-    content: `${team.toUpperCase()} team guessed: ${word} (${result})`,
-    timestamp: Date.now(),
-    word: word,
-    result: result,
-    relatedClue: clueContent
-  };
-  
-  updates.gameHistory = [...(game.gameHistory || []), historyEntry];
-  
-  // Update game state
-  await storage.updateGame(gameId, updates);
-  
-  // Broadcast the guess to all clients
-  const gameRoom = gameDiscussions.get(gameId);
-  if (gameRoom) {
-    gameRoom.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({
-          type: 'guess',
-          team,
-          word,
-          result,
-          timestamp: Date.now()
-        }));
-      }
-    });
-  }
-  
-  return result;
-}
-
 function initializeGameRoom(gameId: number) {
   if (!gameDiscussions.has(gameId)) {
     gameDiscussions.set(gameId, {
@@ -161,7 +88,7 @@ async function handleAIDiscussion(
   clue: { word: string; number: number },
   aiPlayers: AIModel[]
 ) {
-  console.log(`🎮 Starting AI discussion for game ${gameId}, team ${team}, clue: ${clue.word}`);
+  console.log(`Starting AI discussion for game ${gameId}, team ${team}, clue: ${clue.word}`);
   const gameRoom = gameDiscussions.get(gameId);
   console.log('Current game room state:', {
     hasRoom: !!gameRoom,
@@ -170,7 +97,7 @@ async function handleAIDiscussion(
   });
 
   if (!gameRoom || gameRoom.aiDiscussionInProgress) {
-    console.log('❌ Discussion blocked - gameRoom missing or discussion in progress');
+    console.log('Discussion blocked - gameRoom missing or discussion in progress');
     return;
   }
 
@@ -178,16 +105,13 @@ async function handleAIDiscussion(
   let guessCount = 0;
   const maxGuesses = clue.number + 1; // maximum allowed guesses (can be raised if desired)
   let continueGuessing = true; // flag to continue discussion
-  let discussionRound = 1; // track discussion rounds
-  let votingTriggered = false; // track if voting has been triggered yet
   
   try {
     while (continueGuessing) {
       const game = await storage.getGame(gameId);
-      console.log(`🔄 Game discussion state (round ${discussionRound}):`, {
+      console.log('Current game discussion state:', {
         discussionCount: game?.teamDiscussion?.length,
-        lastMessages: game?.teamDiscussion?.slice(-3),
-        votingTriggered
+        lastMessages: game?.teamDiscussion?.slice(-3)
       });
 
       // Retrieve the current game state
@@ -252,246 +176,11 @@ async function handleAIDiscussion(
       const discussions = await Promise.all(discussionPromises);
   
       // For each AI agent, broadcast its discussion message so the team discussion chat is updated
-      // Check if we've reached a point where voting should be triggered
-      // We want to transition after all agents have had a chance to speak
-      const hasEveryoneSpokeThisRound = aiPlayers.every(player => {
-        const messagesInRound = (game.teamDiscussion || []).filter(d => 
-          d.team === team && 
-          d.player === player &&
-          d.round === discussionRound
-        );
-        return messagesInRound.length > 0;
-      });
-      
-      // Decide if we should trigger voting in this round - trigger immediately after all agents speak once
-      if (hasEveryoneSpokeThisRound && !votingTriggered) {
-        votingTriggered = true;
-        console.log(`🗳️ All agents have spoken in round ${discussionRound} - triggering voting phase`);
-        
-        // NEW: Collect all suggested words from all agents with their confidences
-        const allSuggestions = discussions.flatMap(({ player, discussion }) => {
-          const suggestedWords = Array.isArray(discussion.suggestedWords) && discussion.suggestedWords.length > 0
-            ? discussion.suggestedWords
-            : discussion.suggestedWord ? [discussion.suggestedWord] : [];
-          
-          const confidences = Array.isArray(discussion.confidences) && discussion.confidences.length > 0
-            ? discussion.confidences
-            : Array(suggestedWords.length).fill(discussion.confidence || 0.5);
-          
-          return suggestedWords.map((word, idx) => ({
-            word,
-            confidence: confidences[idx] || discussion.confidence || 0.5,
-            player
-          }));
-        });
-        
-        console.log(`🔍 All agent suggestions collected: ${allSuggestions.length} suggestions`);
-        
-        // Group suggestions by word with aggregate confidence
-        const wordConfidences = allSuggestions.reduce((acc, { word, confidence, player }) => {
-          if (!acc[word]) {
-            acc[word] = { totalConfidence: 0, supporters: new Set(), voters: [] };
-          }
-          acc[word].totalConfidence += confidence;
-          acc[word].supporters.add(player);
-          acc[word].voters.push({ player, confidence });
-          return acc;
-        }, {} as Record<string, { totalConfidence: number, supporters: Set<string>, voters: any[] }>);
-        
-        // Find the word with highest confidence across all agents
-        const sortedWords = Object.entries(wordConfidences)
-          .sort(([_, a], [__, b]) => b.totalConfidence - a.totalConfidence)
-          .map(([word, data]) => ({
-            word,
-            totalConfidence: data.totalConfidence,
-            supporterCount: data.supporters.size,
-            voters: data.voters
-          }));
-        
-        if (sortedWords.length > 0) {
-          const bestWord = sortedWords[0];
-          console.log(`🥇 Best word suggestion: "${bestWord.word}" with ${bestWord.totalConfidence.toFixed(2)} confidence`);
-          
-          // Calculate voting metrics for UI display
-          const teamAICount = team === 'red'
-            ? game.redPlayers.filter(p => p !== 'human' && p !== game.redSpymaster).length
-            : game.bluePlayers.filter(p => p !== 'human' && p !== game.blueSpymaster).length;
-          
-          const votePercentage = Math.round((bestWord.supporterCount / Math.max(1, teamAICount)) * 100);
-          
-          // Broadcast vote status to all clients
-          gameRoom.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'word_votes',
-                team,
-                words: [{
-                  word: bestWord.word,
-                  votes: bestWord.supporterCount,
-                  percentage: votePercentage,
-                  voters: bestWord.voters
-                }],
-                totalVoters: teamAICount,
-                timestamp: Date.now()
-              }));
-            }
-          });
-          
-          // Process the guess automatically for the best word
-          if (!game.revealedCards?.includes(bestWord.word)) {
-            // Prepare and process guess
-            const guessMessage = {
-              type: 'guess',
-              content: bestWord.word,
-              team,
-              timestamp: Date.now()
-            };
-            
-            // Broadcast the guess
-            gameRoom.clients.forEach(client => {
-              if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify(guessMessage));
-              }
-            });
-            
-            // Update game state with the guess
-            const updatedGame = await storage.getGame(gameId);
-            if (updatedGame) {
-              const newRevealedCards = [...(updatedGame.revealedCards || []), bestWord.word];
-              
-              // Determine the result of the guess
-              let result: "correct" | "wrong" | "assassin";
-              if (bestWord.word === updatedGame.assassin) {
-                result = "assassin";
-              } else if (
-                (team === "red" && updatedGame.redTeam.includes(bestWord.word)) ||
-                (team === "blue" && updatedGame.blueTeam.includes(bestWord.word))
-              ) {
-                result = "correct";
-              } else {
-                result = "wrong";
-              }
-              
-              // Create the history entry
-              const historyEntry = {
-                type: "guess",
-                turn: team,
-                content: `${team.toUpperCase()} team guessed: ${bestWord.word} (${result})`,
-                timestamp: Date.now(),
-                word: bestWord.word,
-                result: result,
-                relatedClue: updatedGame.gameHistory?.filter(h => h.type === "clue")?.pop()?.content || ""
-              };
-              
-              // Calculate score updates
-              let updates: any = {
-                revealedCards: newRevealedCards,
-                gameHistory: [
-                  ...(updatedGame.gameHistory || []),
-                  historyEntry
-                ]
-              };
-              
-              if (updatedGame.redTeam.includes(bestWord.word)) {
-                updates.redScore = (updatedGame.redScore || 0) + 1;
-              } else if (updatedGame.blueTeam.includes(bestWord.word)) {
-                updates.blueScore = (updatedGame.blueScore || 0) + 1;
-              }
-              
-              if (result === "assassin") {
-                updates.gameState = team === "red" ? "blue_win" : "red_win";
-              } else if (result === "wrong") {
-                updates.currentTurn = team === "red" ? "blue_turn" : "red_turn";
-              }
-              
-              // Update game state with all changes
-              await storage.updateGame(gameId, updates);
-              
-              // Send an AI feedback message about the guess result to the discussion
-              const resultMessage = {
-                team: team as "red" | "blue",
-                player: "Game" as const,
-                message: `Team ${team} guessed "${bestWord.word}" - ${result === "correct" ? "CORRECT! ✅" : result === "wrong" ? "WRONG! ❌" : "ASSASSIN! ☠️"}`,
-                confidences: [1],
-                suggestedWords: [],
-                timestamp: Date.now(),
-                round: discussionRound,
-                isVoting: true,
-                voteType: result === "correct" ? "continue" : "end_turn"
-              };
-              
-              // Add result message to discussion
-              await storage.updateGame(gameId, {
-                teamDiscussion: [
-                  ...(updatedGame.teamDiscussion || []),
-                  resultMessage
-                ]
-              });
-              
-              // Send result message to clients
-              gameRoom.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                  client.send(JSON.stringify({
-                    type: 'discussion',
-                    ...resultMessage
-                  }));
-                }
-              });
-              
-              // If the guess was wrong or assassin, end team's turn
-              if (result !== "correct") {
-                continueGuessing = false;
-                break;
-              }
-              
-              // Update guess count
-              guessCount++;
-              
-              // Reset for next round of suggestions if the guess was correct
-              votingTriggered = false;
-              discussionRound++;
-            }
-          }
-        }
-      }
-
       const newDiscussionMessages = discussions.map(({ player, discussion }) => {
-        // Ensure consistent arrays for suggestedWords and confidences
-        const suggestedWordsArray = Array.isArray(discussion.suggestedWords) && discussion.suggestedWords.length > 0
-          ? discussion.suggestedWords 
-          : (discussion.suggestedWord ? [discussion.suggestedWord] : []);
-
-        // Ensure we have a confidences array that matches suggestedWords
-        let confidencesArray = Array.isArray(discussion.confidences) && discussion.confidences.length > 0
-          ? discussion.confidences
-          : [];
-        
-        // If we have a primary confidence value, use it to populate the array
-        if (suggestedWordsArray.length > 0 && (confidencesArray.length === 0 || confidencesArray.length < suggestedWordsArray.length)) {
-          const baseConfidence = discussion.confidence || 0.8;
-          confidencesArray = suggestedWordsArray.map((_, idx) => {
-            // Scale confidence down for each subsequent word
-            return Math.max(0.3, baseConfidence * (1 - idx * 0.15));
-          });
-        }
-
-        // For single word scenarios, ensure it's still an array
-        if (suggestedWordsArray.length === 0 && discussion.suggestedWord) {
-          suggestedWordsArray.push(discussion.suggestedWord);
-          confidencesArray.push(discussion.confidence || 0.8);
-        }
-
-        // Only enable voting when explicitly triggered
-        // We want ALL agents to make suggestions first before enabling voting
-        const shouldEnableVoting = votingTriggered;
-
-        console.log(`🔶 AI Discussion from ${player}:`, {
-          hasWords: suggestedWordsArray.length > 0,
-          words: suggestedWordsArray,
-          confidences: confidencesArray,
-          action: discussion.action,
-          isVoting: shouldEnableVoting
-        });
+        // Calculate round number for this agent
+        const round = (game.teamDiscussion || [])
+          .filter(d => d.team === team && d.player === player)
+          .length + 1;
           
         return {
           team: team as "red" | "blue",
@@ -499,19 +188,15 @@ async function handleAIDiscussion(
           message: formatDiscussionMessage(
             player, 
             discussion.message, 
-            confidencesArray[0] || 0.8, 
+            discussion.confidences?.[0] || 0.5, 
             null, // No longer using suggestedWord
-            suggestedWordsArray
+            discussion.suggestedWords
           ),
-          confidences: confidencesArray,
-          suggestedWords: suggestedWordsArray,
-          risk: discussion.risk || "Medium",
-          round: discussionRound,
-          timestamp: Date.now(),
-          // Mark as voting message if we've reached the voting phase, agent wants to vote, or has suggestions
-          isVoting: shouldEnableVoting,
-          // Set vote type based on action or default to continue
-          voteType: discussion.action === "end_turn" ? "end_turn" : "continue"
+          confidences: discussion.confidences || [0.5],
+          suggestedWords: discussion.suggestedWords || [],
+          risk: discussion.risk,
+          round,
+          timestamp: Date.now()
         };
       });
 
@@ -579,251 +264,293 @@ async function handleAIDiscussion(
         });
       }
       
-      // Make it easier to end turn - lower the threshold for endTurn suggestions
-      if (endTurnSuggestions.length >= 1 || votingTriggered) {
-        // Calculate end turn vote percentage
-        const teamAICount = team === 'red'
-          ? game.redPlayers.filter(p => p !== 'human' && p !== game.redSpymaster).length
-          : game.bluePlayers.filter(p => p !== 'human' && p !== game.blueSpymaster).length;
+      // If multiple agents or one very confident agent suggests ending the turn, do it
+      if (endTurnSuggestions.length >= 2 || (endTurnSuggestions.length === 1 && endTurnSuggestions[0].confidence > 0.85)) {
+        console.log(`Team ${team} decided to end turn: ${endTurnSuggestions.length} agents suggested it`);
         
-        const votePercentage = Math.round((endTurnSuggestions.length / Math.max(1, teamAICount)) * 100);
+        // Create an end turn history entry
+        const reasonings = endTurnSuggestions.map(s => `${s.player}: ${s.reasoning}`).join("; ");
+        const historyEntry: GameHistoryEntry = {
+          type: "end_turn",
+          turn: team as "red" | "blue",
+          content: `${team.toUpperCase()} team decided to end their turn. Reason: ${reasonings}`,
+          timestamp: Date.now(),
+          word: '', // No word for end turn
+          relatedClue: clue.word
+        };
         
-        // End turn if at least one agent suggests it with high confidence,
-        // or if multiple agents suggest it, or if we're in voting mode
-        const shouldEndTurn = endTurnSuggestions.length >= 2 || 
-          (endTurnSuggestions.length === 1 && endTurnSuggestions[0].confidence > 0.7) ||
-          (votePercentage > 40);
+        await storage.updateGame(gameId, {
+          gameHistory: [
+            ...(game.gameHistory || []),
+            historyEntry
+          ],
+          currentTurn: team === 'red' ? "blue_turn" : "red_turn"
+        });
         
-        // Broadcast the end turn voting status
+        // Broadcast the end turn decision
         gameRoom.clients.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify({
-              type: 'meta_vote',
-              action: 'end_turn',
-              votes: endTurnSuggestions.length,
-              totalVoters: teamAICount,
-              percentage: votePercentage,
-              voters: endTurnSuggestions.map(s => ({ player: s.player, confidence: s.confidence })),
+              type: 'end_turn',
               team,
+              reasoning: reasonings,
               timestamp: Date.now()
             }));
           }
         });
         
-        if (shouldEndTurn) {
-          console.log(`Team ${team} decided to end turn: ${endTurnSuggestions.length} agents suggested it (${votePercentage}%)`);
-          
-          // Create an end turn history entry
-          const reasonings = endTurnSuggestions.map(s => `${s.player}: ${s.reasoning}`).join("; ");
-          const historyEntry: GameHistoryEntry = {
-            type: "end_turn",
-            turn: team as "red" | "blue",
-            content: `${team.toUpperCase()} team decided to end their turn. Reason: ${reasonings}`,
-            timestamp: Date.now(),
-            word: '', // No word for end turn
-            relatedClue: clue.word
-          };
-          
-          await storage.updateGame(gameId, {
-            gameHistory: [
-              ...(game.gameHistory || []),
-              historyEntry
-            ],
-            currentTurn: team === 'red' ? "blue_turn" : "red_turn"
-          });
-          
-          // Broadcast the end turn decision
-          gameRoom.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'end_turn',
-                team,
-                reasoning: reasonings,
-                timestamp: Date.now()
-              }));
-            }
-          });
-          
-          break; // Exit the AI discussion loop
-        }
+        break; // Exit the AI discussion loop
       }
       
-      // Skip old guess processing logic - we now handle guesses automatically after all agents have spoken once
-      // Add a timeout or stuck detection to help move the game along if needed
-      if (discussionRound > 3 && !votingTriggered) {
-        console.log(`Discussion has gone on for ${discussionRound} rounds with no consensus. Ending turn.`);
-        break;
-      }
-      
-      // Calculate sortedWords if not already defined (in case voting wasn't triggered)
-      let sortedWords = [];
-      if (!votingTriggered) {
-        // Collect all suggested words from all agents with their confidences
-        const allSuggestions = discussions.flatMap(({ player, discussion }) => {
-          const suggestedWords = Array.isArray(discussion.suggestedWords) && discussion.suggestedWords.length > 0
-            ? discussion.suggestedWords
-            : discussion.suggestedWord ? [discussion.suggestedWord] : [];
-          
-          const confidences = Array.isArray(discussion.confidences) && discussion.confidences.length > 0
-            ? discussion.confidences
-            : Array(suggestedWords.length).fill(discussion.confidence || 0.5);
-          
-          return suggestedWords.map((word, idx) => ({
-            word,
-            confidence: confidences[idx] || discussion.confidence || 0.5,
+      // Process suggestions — allow agents to guess if they are confident
+      const suggestions = discussions
+        .filter(({ discussion }) => discussion.action === "guess" && discussion.suggestedWord && discussion.confidence > 0.65)
+        .map(({ player, discussion }) => ({
+            word: discussion.suggestedWord!,
+            confidence: discussion.confidence,
             player
-          }));
-        });
-        
-        // Group suggestions by word with aggregate confidence
-        const wordConfidences = allSuggestions.reduce((acc, { word, confidence, player }) => {
-          if (!acc[word]) {
-            acc[word] = { totalConfidence: 0, supporters: new Set(), voters: [] };
-          }
-          acc[word].totalConfidence += confidence;
-          acc[word].supporters.add(player);
-          acc[word].voters.push({ player, confidence });
-          return acc;
-        }, {} as Record<string, { totalConfidence: number, supporters: Set<string>, voters: any[] }>);
-        
-        // Find the word with highest confidence across all agents
-        sortedWords = Object.entries(wordConfidences)
-          .sort(([_, a], [__, b]) => b.totalConfidence - a.totalConfidence)
-          .map(([word, data]) => ({
-            word,
-            totalConfidence: data.totalConfidence,
-            supporterCount: data.supporters.size,
-            voters: data.voters
-          }));
-      }
+        }));
+  
+      // Group suggestions by word to gauge consensus
+      const wordCounts = suggestions.reduce((acc, { word }) => {
+         acc[word] = (acc[word] || 0) + 1;
+         return acc;
+      }, {} as Record<string, number>);
+
+      // Count total active team members for voting
+      const teamAICount = team === 'red'
+        ? game.redPlayers.filter(p => p !== 'human' && p !== game.redSpymaster).length
+        : game.bluePlayers.filter(p => p !== 'human' && p !== game.blueSpymaster).length;
       
-      // Define qualified suggestions based on voting data
-      const qualifiedSuggestions = sortedWords && sortedWords.length > 0 ? 
-        [{
-          word: sortedWords[0].word,
-          confidence: sortedWords[0].totalConfidence
-        }] : [];
+      // Broadcast word voting status for all suggested words
+      const allWordVotes = Object.entries(wordCounts).map(([word, count]) => {
+        const wordSuggestions = suggestions.filter(s => s.word === word);
+        const avgConfidence = wordSuggestions.reduce((sum, s) => sum + s.confidence, 0) / wordSuggestions.length;
+        const votePercentage = Math.round((count / Math.max(1, teamAICount)) * 100);
         
-      // Process suggestions and trigger guesses
-      if (qualifiedSuggestions && qualifiedSuggestions.length > 0) {
-        const suggestion = qualifiedSuggestions[0];
-        console.log(`Team ${team} is making a guess: "${suggestion.word}"`);
-        
-        try {
-          // Handle guess logic
-          const result = await handleGuess(gameId, team, suggestion.word);
-          guessCount++;
-          
-          // Update UI with guess result
-          if (result === "wrong" || result === "assassin") {
-            // Wrong guess ends the turn
+        return {
+          word,
+          votes: count,
+          percentage: votePercentage,
+          avgConfidence,
+          voters: wordSuggestions.map(s => ({ player: s.player, confidence: s.confidence }))
+        };
+      }).sort((a, b) => b.votes - a.votes || b.avgConfidence - a.avgConfidence);
+      
+      // Broadcast vote status if there are any votes
+      if (allWordVotes.length > 0) {
+        gameRoom.clients.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: 'word_votes',
+              team,
+              words: allWordVotes,
+              totalVoters: teamAICount,
+              timestamp: Date.now()
+            }));
+          }
+        });
+      }
+
+      // Lower consensus requirement - any suggestion with confidence > 0.8 or agreed by 2+ agents
+      const bestSuggestions = suggestions
+        .filter(s => s.confidence > 0.8 || wordCounts[s.word] >= 2)
+        .sort((a, b) => b.confidence - a.confidence);
+  
+      // If no qualified suggestion remains and we're past round 3, check if we should end discussion
+      if (bestSuggestions.length === 0) {
+         if (guessCount > 0 || discussions.length > 6) {
+           console.log(`No more high-confidence suggestions after ${guessCount} guesses or ${discussions.length} discussion rounds. Ending turn.`);
+           break;
+         }
+         
+         // If early in the discussion, continue but trigger meta-discussion about being stuck
+         if (discussions.length > 10) {
+           console.log(`Discussion has gone on for ${discussions.length} messages with no consensus. Prompting meta-discussion.`);
+           
+           // Create a meta-discussion message about being stuck
+           const metaMessage: TeamDiscussionEntry = {
+             team: team as "red" | "blue",
+             player: "claude-3-5-sonnet-20241022" as AIModel, // Use Claude as the mediator
+             message: `Team, we seem to be having trouble reaching consensus. Let's consider our options carefully: 1) Keep discussing the current clue, 2) Try a different word, or 3) End our turn. What does everyone think?`,
+             confidences: [0.8],
+             suggestedWords: [],
+             timestamp: Date.now(),
+             round: currentRound,
+             isVoting: true,
+             voteType: "continue"
+           };
+           
+           // Update the game with the meta-discussion
+           await storage.updateGame(gameId, {
+             teamDiscussion: [
+               ...(game.teamDiscussion || []),
+               metaMessage
+             ]
+           });
+           
+           // Broadcast meta-discussion to clients
+           gameRoom.clients.forEach(client => {
+             if (client.readyState === WebSocket.OPEN) {
+               client.send(JSON.stringify({
+                 type: 'discussion',
+                 ...metaMessage,
+                 isMetaDiscussion: true
+               }));
+             }
+           });
+           
+           // If we're above 15 messages and still stuck, force end turn
+           if (discussions.length > 15) {
+             console.log(`Discussion has gone on for ${discussions.length} messages with no consensus. Ending turn.`);
+             break;
+           }
+         }
+      }
+  
+      // For each qualified suggestion, process a guess:
+      for (const suggestion of bestSuggestions) {
+         if (guessCount >= maxGuesses) {
             continueGuessing = false;
             break;
-          } else if (result === "correct" && guessCount < maxGuesses) {
-            // For correct guesses, prompt team to vote on whether to continue
-            const voteMessage: TeamDiscussionEntry = {
-              team: team as "red" | "blue",
-              player: "claude-3-5-sonnet-20241022" as AIModel, // Use Claude as the mediator
-              message: `Great job guessing "${suggestion.word}" correctly! Should we continue guessing or end our turn? We can make ${maxGuesses - guessCount} more guesses.`,
-              confidences: [0.9],
-              suggestedWords: [], // No words for meta vote message
+         }
+
+         guessCount++;
+         console.log(`Processing guess ${guessCount}/${maxGuesses}: ${suggestion.word} (${suggestion.confidence})`);
+
+         // Broadcast the guess message
+         const guessMessage = {
+            type: 'guess',
+            content: suggestion.word,
+            team,
+            timestamp: Date.now()
+         };
+
+         gameRoom.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify(guessMessage));
+            }
+         });
+
+         // Update game state with the guess
+         const updatedGame = await storage.getGame(gameId);
+         if (updatedGame) {
+            const newRevealedCards = [...(updatedGame.revealedCards || []), suggestion.word];
+            
+            // Determine the result of the guess
+            let result: "correct" | "wrong" | "assassin";
+            if (suggestion.word === updatedGame.assassin) {
+              result = "assassin";
+            } else if (
+              (team === "red" && updatedGame.redTeam.includes(suggestion.word)) ||
+              (team === "blue" && updatedGame.blueTeam.includes(suggestion.word))
+            ) {
+              result = "correct";
+            } else {
+              result = "wrong";
+            }
+            
+            // Create the history entry with all necessary information
+            const historyEntry: GameHistoryEntry = {
+              type: "guess",
+              turn: team as "red" | "blue",
+              content: `${team.toUpperCase()} team guessed: ${suggestion.word} (${result})`,
               timestamp: Date.now(),
-              round: discussionRound,
-              isVoting: true, // Mark this as a voting message
-              voteType: "continue" // Default to continue vote type
+              word: suggestion.word,
+              result: result,
+              relatedClue: clue.word // Link the guess to the current clue
             };
             
-            // Update game with voting message
-            const updatedGame = await storage.getGame(gameId);
-            if (updatedGame) {
+            // Calculate score updates - score goes to the TEAM OWNING THE WORD
+            let scoreUpdates: {redScore?: number, blueScore?: number} = {};
+            
+            // Always award points to the team that OWNS the word, not the team that's guessing
+            if (updatedGame.redTeam.includes(suggestion.word)) {
+              // Red team's word was revealed - red team gets a point regardless of who guessed it
+              scoreUpdates.redScore = (updatedGame.redScore || 0) + 1;
+              console.log(`Red team gets a point because their word "${suggestion.word}" was revealed`);
+            } else if (updatedGame.blueTeam.includes(suggestion.word)) {
+              // Blue team's word was revealed - blue team gets a point regardless of who guessed it
+              scoreUpdates.blueScore = (updatedGame.blueScore || 0) + 1;
+              console.log(`Blue team gets a point because their word "${suggestion.word}" was revealed`);
+            }
+            // Assassin and neutral words don't affect score
+            
+            // Update game history with detailed guess information
+            await storage.updateGame(gameId, {
+              revealedCards: newRevealedCards,
+              gameHistory: [
+                ...(updatedGame.gameHistory || []),
+                historyEntry
+              ],
+              ...scoreUpdates // Apply score updates
+            });
+            
+            // Update the game memory system with detailed result info
+            updateTurnResults(
+              gameId,
+              team as "red" | "blue",
+              suggestion.word,
+              result,
+              clue
+            );
+            
+            // Handle game flow based on result
+            if (result === "assassin") {
+              await storage.updateGame(gameId, {
+                gameState: team === 'red' ? "blue_win" : "red_win"
+              });
+              continueGuessing = false;
+              break;
+            } else if (result === "wrong") {
+              // Wrong guess ends the turn
+              continueGuessing = false;
+              break;
+            } else if (result === "correct" && guessCount < maxGuesses) {
+              // For correct guesses, prompt team to vote on whether to continue
+              const voteMessage: TeamDiscussionEntry = {
+                team: team as "red" | "blue",
+                player: "claude-3-5-sonnet-20241022" as AIModel, // Use Claude as the mediator
+                message: `Great job guessing "${suggestion.word}" correctly! Should we continue guessing or end our turn? We can make ${maxGuesses - guessCount} more guesses.`,
+                confidences: [0.9],
+                suggestedWords: [],
+                timestamp: Date.now(),
+                round: currentRound,
+                isVoting: true,
+                voteType: "continue"
+              };
+              
+              // Update game with voting message
               await storage.updateGame(gameId, {
                 teamDiscussion: [
                   ...(updatedGame.teamDiscussion || []),
                   voteMessage
                 ]
               });
+              
+              // Broadcast voting message to clients
+              gameRoom.clients.forEach(client => {
+                if (client.readyState === WebSocket.OPEN) {
+                  client.send(JSON.stringify({
+                    type: 'discussion',
+                    ...voteMessage,
+                    isMetaDiscussion: true
+                  }));
+                }
+              });
+              
+              // Short pause to allow team to review the correct guess before continuing
+              await new Promise(resolve => setTimeout(resolve, 1500));
             }
-            
-            // Broadcast voting message to clients
-            gameRoom.clients.forEach(client => {
-              if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                  type: 'discussion',
-                  ...voteMessage,
-                  isMetaDiscussion: true
-                }));
-              }
-            });
-            
-            // Short pause to allow team to review the correct guess before continuing
-            await new Promise(resolve => setTimeout(resolve, 1500));
-          }
-        } catch (error) {
-          console.error("Error processing guess:", error);
-          continueGuessing = false;
-        }
+            // For correct guesses, continue guessing if more high-confidence suggestions remain.
+         }
       }
-      
-      // If we've had a complete round of discussion, increment the round counter
-      if (hasEveryoneSpokeThisRound) {
-        discussionRound++;
-        console.log(`📝 Moving to discussion round ${discussionRound}`);
-      }
-      
+  
       // Add a short delay before next round of discussion messages
       await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Check if we should force transition to voting after enough rounds
-      if (discussionRound > 3 && !votingTriggered) {
-        console.log(`🚨 After ${discussionRound-1} full rounds, forcing transition to voting phase`);
-        votingTriggered = true;
-        
-        // Create a voting transition message
-        const mediator = aiPlayers[0]; // Use first agent as moderator
-        const suggestedWord = suggestion?.word || "";
-        const confidence = suggestion?.confidence || 0.5;
-        const votingMessage: TeamDiscussionEntry = {
-          team: team as "red" | "blue",
-          player: "Game", // Use "Game" for system messages
-          message: `Should we guess "${suggestedWord}"?`,
-          suggestedWord, // Make sure this is set
-          suggestedWords: [suggestedWord], // Also include in the array for compatibility
-          confidences: [confidence],
-          timestamp: Date.now(),
-          round: discussionRound,
-          isVoting: true, // This is crucial - marks it as a voting message
-          voteType: "continue" // Default vote type
-        };
-        
-        // Update game with voting message
-        await storage.updateGame(gameId, {
-          teamDiscussion: [
-            ...(game.teamDiscussion || []),
-            votingMessage
-          ]
-        });
-        
-        // Broadcast voting message
-        gameRoom.clients.forEach(client => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'discussion_updated',
-              team,
-              entry: votingMessage,
-              voteStatus: {
-                word: suggestedWord,
-                votes: 0,
-                threshold: Math.ceil(teamPlayers.length / 2),
-                isVoting: true
-              }
-            }));
-          }
-        });
-      }
     }
   } finally {
     gameRoom.aiDiscussionInProgress = false;
-    console.log(`🏁 AI discussion for game ${gameId}, team ${team} complete after ${discussionRound-1} rounds`);
   }
 }
 
@@ -1148,80 +875,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         discussion.suggestedWords
       );
 
-      // Create the discussion message entry - with appropriate flags for voting
-      // Ensure we always have properly formatted arrays for suggestedWords and confidences
-      const suggestedWordsArray = Array.isArray(discussion.suggestedWords) && discussion.suggestedWords.length > 0
-        ? discussion.suggestedWords 
-        : (discussion.suggestedWord ? [discussion.suggestedWord] : []);
-
-      // Ensure we have a confidences array that matches suggestedWords
-      let confidencesArray = Array.isArray(discussion.confidences) && discussion.confidences.length > 0
-        ? discussion.confidences
-        : [];
-      
-      // If we have a primary confidence value, use it to populate the array
-      if (suggestedWordsArray.length > 0 && (confidencesArray.length === 0 || confidencesArray.length < suggestedWordsArray.length)) {
-        const baseConfidence = discussion.confidence || 0.8;
-        confidencesArray = suggestedWordsArray.map((_, idx) => {
-          // Scale confidence down for each subsequent word
-          return Math.max(0.3, baseConfidence * (1 - idx * 0.15));
-        });
-      }
-
-      // For single word scenarios, ensure it's still an array
-      if (suggestedWordsArray.length === 0 && discussion.suggestedWord) {
-        suggestedWordsArray.push(discussion.suggestedWord);
-        confidencesArray.push(discussion.confidence || 0.8);
-      }
-
-      // Always mark messages with suggestions as voting-enabled
-      const shouldEnableVoting = suggestedWordsArray.length > 0 || 
-        discussion.action === "end_turn" || 
-        discussion.action === "guess";
-
-      console.log(`🔍 New discussion from ${model}:`, {
-        hasWords: suggestedWordsArray.length > 0,
-        words: suggestedWordsArray,
-        confidences: confidencesArray,
-        action: discussion.action,
-        isVoting: shouldEnableVoting
-      });
-
       const newDiscussion = {
         team,
         player: model,
         message: formattedMessage,
-        confidences: confidencesArray,
-        suggestedWords: suggestedWordsArray,
+        confidences: discussion.confidences || [0.5],
+        suggestedWords: discussion.suggestedWords || [],
         risk: discussion.risk,
         timestamp: Date.now(),
         round: (game.teamDiscussion || [])
           .filter(d => d.team === team && d.player === model)
           .length + 1,
-        // ALWAYS set isVoting flag for messages with suggestions
-        isVoting: shouldEnableVoting,
-        // Set the appropriate vote type 
+        isVoting: discussion.action === "end_turn",
         voteType: discussion.action === "end_turn" ? "end_turn" : "continue"
       };
-
-      // Add transition logic to force voting after a certain number of messages
-      const teamMessages = (game.teamDiscussion || []).filter(msg => msg.team === team);
-      
-      // If we have at least 3 messages from this team and no voting has started yet
-      const hasVotingStarted = teamMessages.some(msg => msg.isVoting);
-      const teamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
-      const isTeamComplete = teamMessages.filter(msg => 
-        msg.round === newDiscussion.round // Same round
-      ).length >= teamPlayers.length;
-      
-      // Force transition to voting state if needed
-      if (!hasVotingStarted && isTeamComplete && discussion.suggestedWords?.length > 0) {
-        newDiscussion.isVoting = true;
-        // If agent suggested a word with high confidence, make it a word vote
-        if (discussion.confidences && discussion.confidences[0] > 0.7) {
-          newDiscussion.voteType = "continue";
-        }
-      }
 
       // Update game state with new discussion message
       await storage.updateGame(game.id, {
@@ -1234,47 +901,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Broadcast message to all clients
       const gameRoom = gameDiscussions.get(game.id);
       if (gameRoom) {
-        // Determine if we should force a vote after this message
-        const shouldForceVoteTransition = 
-          !gameRoom.aiDiscussionInProgress && // Not already in voting
-          teamMessages.length >= 3 && // At least 3 messages
-          !hasVotingStarted && // No voting has started
-          suggestedWordsArray.length > 0; // Has suggestions
-        
-        // Ensure we're using the actual suggestedWordsArray and confidencesArray we constructed
-        const messageToSend = {
-          type: 'discussion',
-          team,
-          player: model,
-          message: formattedMessage, // Fixed field name
-          confidences: confidencesArray,
-          suggestedWords: suggestedWordsArray,
-          risk: discussion.risk || "Medium",
-          timestamp: Date.now(),
-          round: newDiscussion.round,
-          // Either use the discussion's voting flag or force a transition if needed
-          isVoting: shouldEnableVoting || shouldForceVoteTransition,
-          voteType: newDiscussion.voteType,
-          timeInfo: discussion.timeInfo || {
-            turnStartTime: Date.now(),
-            turnTimeLimit: 60,
-            remainingTime: 60
-          }
-        };
-        
-        console.log('📤 Sending message to clients:', {
-          player: model,
-          suggestedWords: messageToSend.suggestedWords,
-          confidences: messageToSend.confidences,
-          isVoting: messageToSend.isVoting
-        });
-        
-        console.log(`Broadcasting message with voting status: ${messageToSend.isVoting}`);
-        
-        // Send to all connected clients
         gameRoom.clients.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(messageToSend));
+            client.send(JSON.stringify({
+              type: 'discussion',
+              team,
+              player: model,
+              content: formattedMessage,
+              confidences: discussion.confidences || [0.5],
+              suggestedWords: discussion.suggestedWords || [],
+              risk: discussion.risk,
+              timestamp: Date.now(),
+              round: newDiscussion.round,
+              isVoting: discussion.action === "end_turn",
+              timeInfo: discussion.timeInfo || {
+                turnStartTime: Date.now(),
+                turnTimeLimit: 60,
+                remainingTime: 60
+              }
+            }));
           }
         });
       }
@@ -1386,6 +1031,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      if (req.body.currentTurn) {
+        updates.currentTurn = req.body.currentTurn;
+        updates.teamDiscussion = [];
+        updates.consensusVotes = [];
+
+        // Clear spymaster clue when turn changes
+        const gameRoom = gameDiscussions.get(game.id);
+        if (gameRoom) {
+          gameRoom.lastSpymasterClue.clear();
+        }
+      }
+
       const updatedGame = await storage.updateGame(game.id, updates);
       res.json(updatedGame);
     } catch (error: any) {
@@ -1401,18 +1058,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { model, team, word } = req.body;
 
-      if (!team) {
-        return res.status(400).json({ error: "Team is required" });
+      if (!model || !team || !VALID_MODELS.includes(model as AIModel)) {
+        return res.status(400).json({ error: "Invalid model or team" });
       }
 
       const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
-      
-      // Allow human votes without model validation
-      if (model !== 'human' && (!model || !VALID_MODELS.includes(model as AIModel))) {
-        return res.status(400).json({ error: "Invalid model" });
-      }
-
-      if (model !== 'human' && !currentTeamPlayers.includes(model)) {
+      if (!currentTeamPlayers.includes(model)) {
         return res.status(400).json({ error: "AI model is not part of the team" });
       }
 
@@ -1424,55 +1075,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const availableWords = game.words.filter(w => !(game.revealedCards || []).includes(w));
       
-      // Create the new vote object
-      let newVote: ConsensusVote;
-      
-      if (model === 'human') {
-        // For human votes, create a direct vote without AI decisions
-        newVote = {
-          team,
-          player: model,
-          word,
-          approved: true, // Humans vote to approve by default
-          confidence: 0.9,
-          timestamp: Date.now(),
-          reason: "Human player voted",
-          relatedClue: clueContent // Store the current clue for traceability
-        };
-      } else {
-        // For AI, get the decision
-        const vote = await makeAgentDecision(
-          model as AIModel,
-          team as "red" | "blue",
-          word,
-          currentClue,
-          game.teamDiscussion || [],
-          availableWords,
-          game.revealedCards || [],
-          (game.teamDiscussion || []).filter(d => 
-            d.team === team && 
-            d.suggestedWord && 
-            game.gameHistory?.some(h => 
-              h.type === "guess" && 
-              h.turn === team && 
-              h.word === d.suggestedWord
-            )
-          ).length
-        );
-        
-        newVote = {
-          team,
-          player: model,
-          word,
-          approved: vote.decision === "guess",
-          confidence: vote.confidence,
-          timestamp: Date.now(),
-          reason: vote.explanation,
-          relatedClue: clueContent // Store the current clue for traceability
-        };
-      }
+      const vote = await makeAgentDecision(
+        model as AIModel,
+        team as "red" | "blue",
+        word,
+        currentClue,
+        game.teamDiscussion || [],
+        availableWords,
+        game.revealedCards || [],
+        (game.teamDiscussion || []).filter(d => 
+          d.team === team && 
+          d.suggestedWord && 
+          game.gameHistory?.some(h => 
+            h.type === "guess" && 
+            h.turn === team && 
+            h.word === d.suggestedWord
+          )
+        ).length
+      );
 
-      // Add the vote to the consensus votes
+      const newVote: ConsensusVote = {
+        team,
+        player: model,
+        word,
+        approved: vote.decision === "guess",
+        confidence: vote.confidence,
+        timestamp: Date.now(),
+        reason: vote.explanation
+      };
+
       const updatedVotes = game.consensusVotes 
         ? [...game.consensusVotes, newVote]
         : [newVote];
@@ -1481,238 +1112,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         consensusVotes: updatedVotes
       });
 
-      // Calculate the voting status
       const teamAIPlayers = currentTeamPlayers.filter(
         (p: string) => p !== "human" && p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
       ) as AIModel[];
 
       const teamVotes = updatedVotes.filter(v => v.team === team && v.word === word);
-      const voteCount = teamVotes.length;
-      const totalVoters = Math.max(1, teamAIPlayers.length + (currentTeamPlayers.includes('human') ? 1 : 0));
-      const votePercentage = Math.round((voteCount / totalVoters) * 100);
-      
-      // Broadcast voting status to all clients
-      const gameRoom = gameDiscussions.get(game.id);
-      if (gameRoom) {
-        console.log(`📊 Word votes status for "${word}": ${voteCount}/${totalVoters} (${votePercentage}%)`);
-        
-        // Send word_votes message to all clients
-        gameRoom.clients.forEach(client => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'word_votes',
-              team,
-              words: [{
-                word,
-                votes: voteCount,
-                percentage: votePercentage,
-                voters: teamVotes.map(v => ({ player: v.player, confidence: v.confidence }))
-              }],
-              totalVoters,
-              timestamp: Date.now()
-            }));
-          }
-        });
-      }
-
-      // Check if we've reached consensus threshold to make a guess (>50%)
-      const thresholdReached = votePercentage > 50;
-      
-      if (thresholdReached && team === (game.currentTurn === 'red_turn' ? 'red' : 'blue')) {
-        console.log(`🎯 Consensus threshold reached for "${word}" with ${votePercentage}% of votes. Processing guess.`);
-        
-        // If threshold is reached, process the guess
-        // Add the word to revealed cards
-        const updatedRevealedCards = [...(game.revealedCards || []), word];
-        
-        // Determine the result of the guess
-        let result: "correct" | "wrong" | "assassin";
-        if (word === game.assassin) {
-          result = "assassin";
-        } else if (
-          (team === "red" && game.redTeam.includes(word)) ||
-          (team === "blue" && game.blueTeam.includes(word))
-        ) {
-          result = "correct";
-        } else {
-          result = "wrong";
-        }
-        
-        // Create the history entry
-        const historyEntry = {
-          type: "guess",
-          turn: team,
-          content: `${team.toUpperCase()} team guessed: ${word} (${result})`,
-          timestamp: Date.now(),
-          word: word,
-          result: result,
-          relatedClue: clueContent
-        };
-        
-        // Calculate score updates
-        let scoreUpdates: {redScore?: number, blueScore?: number} = {};
-        
-        // Award points to the team that OWNS the word
-        if (game.redTeam.includes(word)) {
-          scoreUpdates.redScore = (game.redScore || 0) + 1;
-        } else if (game.blueTeam.includes(word)) {
-          scoreUpdates.blueScore = (game.blueScore || 0) + 1;
-        }
-        
-        // Handle turn changes based on guess result
-        let turnUpdates = {};
-        if (result === "assassin") {
-          // If assassin, other team wins
-          turnUpdates = {
-            gameState: team === "red" ? "blue_win" : "red_win"
-          };
-        } else if (result === "wrong") {
-          // If wrong guess, switch turns
-          turnUpdates = {
-            currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
-          };
-        }
-        
-        // Update game with all changes
-        await storage.updateGame(game.id, {
-          revealedCards: updatedRevealedCards,
-          gameHistory: [
-            ...(game.gameHistory || []),
-            historyEntry
-          ],
-          ...scoreUpdates,
-          ...turnUpdates
-        });
-        
-        // Broadcast guess to all clients
-        if (gameRoom) {
-          gameRoom.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'guess',
-                team,
-                content: word,
-                result,
-                timestamp: Date.now()
-              }));
-            }
-          });
-        }
-      }
+      const allVoted = teamVotes.length === teamAIPlayers.length;
+      const allApproved = allVoted && teamVotes.every(v => v.approved);
 
       res.json({
         vote: newVote,
-        voteCount,
-        votePercentage,
-        thresholdReached
+        allVoted,
+        allApproved
       });
     } catch (error: any) {
       console.error("Error in AI vote:", error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-  
-  // Add a new endpoint for meta-voting (continue/end_turn decisions)
-  app.post("/api/games/:id/meta/vote", async (req, res) => {
-    try {
-      const game = await storage.getGame(Number(req.params.id));
-      if (!game) return res.status(404).json({ error: "Game not found" });
-
-      const { model, team, action } = req.body;
-
-      if (!team) {
-        return res.status(400).json({ error: "Team is required" });
-      }
-      
-      if (!action || !["continue", "end_turn", "discuss_more"].includes(action)) {
-        return res.status(400).json({ error: "Invalid action" });
-      }
-
-      // Allow human votes without model validation
-      if (model !== 'human' && (!model || !VALID_MODELS.includes(model as AIModel))) {
-        return res.status(400).json({ error: "Invalid model" });
-      }
-
-      const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
-      if (model !== 'human' && !currentTeamPlayers.includes(model)) {
-        return res.status(400).json({ error: "AI model is not part of the team" });
-      }
-
-      // Create a new meta vote entry
-      const newVote = {
-        team,
-        player: model,
-        action,
-        timestamp: Date.now(),
-        confidence: 0.8
-      };
-
-      // Store meta votes (you might need to add a new field to the game schema)
-      const metaVotes = game.metaVotes || [];
-      const updatedMetaVotes = [...metaVotes, newVote];
-      
-      await storage.updateGame(game.id, {
-        metaVotes: updatedMetaVotes
-      });
-
-      // Calculate voting metrics
-      const teamAIPlayers = currentTeamPlayers.filter(
-        (p: string) => p !== "human" && p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
-      );
-      
-      const actionVotes = updatedMetaVotes.filter(v => v.team === team && v.action === action);
-      const voteCount = actionVotes.length;
-      const totalVoters = teamAIPlayers.length;
-      const votePercentage = Math.round((voteCount / Math.max(1, totalVoters)) * 100);
-      
-      // Broadcast meta vote status to all clients
-      const gameRoom = gameDiscussions.get(game.id);
-      if (gameRoom) {
-        gameRoom.clients.forEach(client => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'meta_vote',
-              action,
-              votes: voteCount,
-              totalVoters,
-              percentage: votePercentage,
-              voters: actionVotes.map(v => ({ player: v.player, confidence: v.confidence || 0.8 })),
-              team,
-              timestamp: Date.now()
-            }));
-          }
-        });
-      }
-
-      // Execute action when consensus is reached (>50% of voters)
-      let shouldEndTurn = false;
-      let shouldContinue = false;
-      
-      if (votePercentage > 50) {
-        if (action === 'end_turn') {
-          shouldEndTurn = true;
-        } else if (action === 'continue') {
-          shouldContinue = true;
-        }
-      }
-      
-      // Handle end turn action if consensus reached
-      if (shouldEndTurn) {
-        const nextTurn = team === 'red' ? "blue_turn" : "red_turn";
-        await storage.updateGame(game.id, {
-          currentTurn: nextTurn
-        });
-      }
-
-      res.json({
-        vote: newVote,
-        voteCount,
-        totalVoters,
-        percentage: votePercentage,
-        action: shouldEndTurn ? 'turn_ended' : shouldContinue ? 'continuing' : 'vote_recorded'
-      });
-    } catch (error: any) {
-      console.error("Error in meta vote:", error);
       res.status(500).json({ error: error.message });
     }
   });
