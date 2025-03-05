@@ -66,79 +66,6 @@ function cleanupGame(gameId: number) {
   }
 }
 
-// Helper function to handle guesses from AI teams
-async function handleGuess(gameId: number, team: string, word: string): Promise<"correct" | "wrong" | "assassin"> {
-  const game = await storage.getGame(gameId);
-  if (!game) throw new Error("Game not found");
-  
-  // Skip if word is already revealed
-  if (game.revealedCards?.includes(word)) {
-    return "wrong"; // Treat as wrong guess if word is already revealed
-  }
-  
-  // Update revealed cards
-  const newRevealedCards = [...(game.revealedCards || []), word];
-  
-  // Determine the result of the guess
-  let result: "correct" | "wrong" | "assassin";
-  let updates: any = { revealedCards: newRevealedCards };
-  
-  if (word === game.assassin) {
-    result = "assassin";
-    updates.gameState = team === "red" ? "blue_win" : "red_win";
-  } else if (
-    (team === "red" && game.redTeam.includes(word)) ||
-    (team === "blue" && game.blueTeam.includes(word))
-  ) {
-    result = "correct";
-    if (game.redTeam.includes(word)) {
-      updates.redScore = (game.redScore || 0) + 1;
-    } else if (game.blueTeam.includes(word)) {
-      updates.blueScore = (game.blueScore || 0) + 1;
-    }
-  } else {
-    result = "wrong";
-    updates.currentTurn = team === "red" ? "blue_turn" : "red_turn";
-  }
-  
-  // Get the latest clue to reference in history
-  const clueContent = game.gameHistory?.filter(h => h.type === "clue")?.pop()?.content || "";
-  
-  // Create the history entry
-  const historyEntry = {
-    type: "guess",
-    turn: team,
-    content: `${team.toUpperCase()} team guessed: ${word} (${result})`,
-    timestamp: Date.now(),
-    word: word,
-    result: result,
-    relatedClue: clueContent
-  };
-  
-  updates.gameHistory = [...(game.gameHistory || []), historyEntry];
-  
-  // Update game state
-  await storage.updateGame(gameId, updates);
-  
-  // Broadcast the guess to all clients
-  const gameRoom = gameDiscussions.get(gameId);
-  if (gameRoom) {
-    gameRoom.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({
-          type: 'guess',
-          team,
-          word,
-          result,
-          timestamp: Date.now()
-        }));
-      }
-    });
-  }
-  
-  return result;
-}
-
 function initializeGameRoom(gameId: number) {
   if (!gameDiscussions.has(gameId)) {
     gameDiscussions.set(gameId, {
@@ -654,116 +581,48 @@ async function handleAIDiscussion(
         console.log(`Discussion has gone on for ${discussionRound} rounds with no consensus. Ending turn.`);
         break;
       }
-      
-      // Calculate sortedWords if not already defined (in case voting wasn't triggered)
-      let sortedWords = [];
-      if (!votingTriggered) {
-        // Collect all suggested words from all agents with their confidences
-        const allSuggestions = discussions.flatMap(({ player, discussion }) => {
-          const suggestedWords = Array.isArray(discussion.suggestedWords) && discussion.suggestedWords.length > 0
-            ? discussion.suggestedWords
-            : discussion.suggestedWord ? [discussion.suggestedWord] : [];
-          
-          const confidences = Array.isArray(discussion.confidences) && discussion.confidences.length > 0
-            ? discussion.confidences
-            : Array(suggestedWords.length).fill(discussion.confidence || 0.5);
-          
-          return suggestedWords.map((word, idx) => ({
-            word,
-            confidence: confidences[idx] || discussion.confidence || 0.5,
-            player
-          }));
-        });
-        
-        // Group suggestions by word with aggregate confidence
-        const wordConfidences = allSuggestions.reduce((acc, { word, confidence, player }) => {
-          if (!acc[word]) {
-            acc[word] = { totalConfidence: 0, supporters: new Set(), voters: [] };
-          }
-          acc[word].totalConfidence += confidence;
-          acc[word].supporters.add(player);
-          acc[word].voters.push({ player, confidence });
-          return acc;
-        }, {} as Record<string, { totalConfidence: number, supporters: Set<string>, voters: any[] }>);
-        
-        // Find the word with highest confidence across all agents
-        sortedWords = Object.entries(wordConfidences)
-          .sort(([_, a], [__, b]) => b.totalConfidence - a.totalConfidence)
-          .map(([word, data]) => ({
-            word,
-            totalConfidence: data.totalConfidence,
-            supporterCount: data.supporters.size,
-            voters: data.voters
-          }));
-      }
-      
-      // Define qualified suggestions based on voting data
-      const qualifiedSuggestions = sortedWords && sortedWords.length > 0 ? 
-        [{
-          word: sortedWords[0].word,
-          confidence: sortedWords[0].totalConfidence
-        }] : [];
-        
-      // Process suggestions and trigger guesses
-      if (qualifiedSuggestions && qualifiedSuggestions.length > 0) {
-        const suggestion = qualifiedSuggestions[0];
-        console.log(`Team ${team} is making a guess: "${suggestion.word}"`);
-        
-        try {
-          // Handle guess logic
-          const result = await handleGuess(gameId, team, suggestion.word);
-          guessCount++;
-          
-          // Update UI with guess result
-          if (result === "wrong" || result === "assassin") {
-            // Wrong guess ends the turn
-            continueGuessing = false;
-            break;
-          } else if (result === "correct" && guessCount < maxGuesses) {
-            // For correct guesses, prompt team to vote on whether to continue
-            const voteMessage: TeamDiscussionEntry = {
-              team: team as "red" | "blue",
-              player: "claude-3-5-sonnet-20241022" as AIModel, // Use Claude as the mediator
-              message: `Great job guessing "${suggestion.word}" correctly! Should we continue guessing or end our turn? We can make ${maxGuesses - guessCount} more guesses.`,
-              confidences: [0.9],
-              suggestedWords: [], // No words for meta vote message
-              timestamp: Date.now(),
-              round: discussionRound,
-              isVoting: true, // Mark this as a voting message
-              voteType: "continue" // Default to continue vote type
-            };
-            
-            // Update game with voting message
-            const updatedGame = await storage.getGame(gameId);
-            if (updatedGame) {
+              continueGuessing = false;
+              break;
+            } else if (result === "correct" && guessCount < maxGuesses) {
+              // For correct guesses, prompt team to vote on whether to continue
+              const voteMessage: TeamDiscussionEntry = {
+                team: team as "red" | "blue",
+                player: "claude-3-5-sonnet-20241022" as AIModel, // Use Claude as the mediator
+                message: `Great job guessing "${suggestion.word}" correctly! Should we continue guessing or end our turn? We can make ${maxGuesses - guessCount} more guesses.`,
+                confidences: [0.9],
+                suggestedWords: [], // No words for meta vote message
+                timestamp: Date.now(),
+                round: currentRound,
+                isVoting: true, // Mark this as a voting message
+                voteType: "continue" // Default to continue vote type
+              };
+              
+              // Update game with voting message
               await storage.updateGame(gameId, {
                 teamDiscussion: [
                   ...(updatedGame.teamDiscussion || []),
                   voteMessage
                 ]
               });
+              
+              // Broadcast voting message to clients
+              gameRoom.clients.forEach(client => {
+                if (client.readyState === WebSocket.OPEN) {
+                  client.send(JSON.stringify({
+                    type: 'discussion',
+                    ...voteMessage,
+                    isMetaDiscussion: true
+                  }));
+                }
+              });
+              
+              // Short pause to allow team to review the correct guess before continuing
+              await new Promise(resolve => setTimeout(resolve, 1500));
             }
-            
-            // Broadcast voting message to clients
-            gameRoom.clients.forEach(client => {
-              if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                  type: 'discussion',
-                  ...voteMessage,
-                  isMetaDiscussion: true
-                }));
-              }
-            });
-            
-            // Short pause to allow team to review the correct guess before continuing
-            await new Promise(resolve => setTimeout(resolve, 1500));
-          }
-        } catch (error) {
-          console.error("Error processing guess:", error);
-          continueGuessing = false;
-        }
+            // For correct guesses, continue guessing if more high-confidence suggestions remain.
+         }
       }
-      
+  
       // If we've had a complete round of discussion, increment the round counter
       if (hasEveryoneSpokeThisRound) {
         discussionRound++;
@@ -780,19 +639,16 @@ async function handleAIDiscussion(
         
         // Create a voting transition message
         const mediator = aiPlayers[0]; // Use first agent as moderator
-        const suggestedWord = suggestion?.word || "";
-        const confidence = suggestion?.confidence || 0.5;
         const votingMessage: TeamDiscussionEntry = {
           team: team as "red" | "blue",
-          player: "Game", // Use "Game" for system messages
-          message: `Should we guess "${suggestedWord}"?`,
-          suggestedWord, // Make sure this is set
-          suggestedWords: [suggestedWord], // Also include in the array for compatibility
-          confidences: [confidence],
+          player: mediator,
+          message: `We've discussed the clue "${clue.word}" extensively. Let's vote on our best guess or decide to end our turn.`,
+          confidences: [0.9],
+          suggestedWords: [],
           timestamp: Date.now(),
           round: discussionRound,
-          isVoting: true, // This is crucial - marks it as a voting message
-          voteType: "continue" // Default vote type
+          isVoting: true,
+          voteType: "continue"
         };
         
         // Update game with voting message
@@ -807,15 +663,8 @@ async function handleAIDiscussion(
         gameRoom.clients.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify({
-              type: 'discussion_updated',
-              team,
-              entry: votingMessage,
-              voteStatus: {
-                word: suggestedWord,
-                votes: 0,
-                threshold: Math.ceil(teamPlayers.length / 2),
-                isVoting: true
-              }
+              type: 'discussion',
+              ...votingMessage
             }));
           }
         });
@@ -1383,6 +1232,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           updates.gameState = "red_win";
         } else if (game.blueTeam.every((word: string) => req.body.revealedCards?.includes(word))) {
           updates.gameState = "blue_win";
+        }
+      }
+
+      if (req.body.currentTurn) {
+        updates.currentTurn = req.body.currentTurn;
+        updates.teamDiscussion = [];
+        updates.consensusVotes = [];
+
+        // Clear spymaster clue when turn changes
+        const gameRoom = gameDiscussions.get(game.id);
+        if (gameRoom) {
+          gameRoom.lastSpymasterClue.clear();
         }
       }
 

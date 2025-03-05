@@ -14,20 +14,40 @@ export function useGame(gameId?: number) {
     return newId;
   })());
 
-  const connect = useCallback(() => {
+  // Track processed message hashes to avoid duplicates
+  const processedMessages = useRef(new Set<string>());
+
+  // Create a hash function for message uniqueness
+  const hashMessage = (msg: any): string => {
+    if (!msg) return '';
+    
+    // Extract key fields to identify the message
+    const timestamp = msg.timestamp || 0;
+    const player = msg.player || '';
+    const messageText = msg.message?.substring(0, 50) || '';
+    const suggestedWords = Array.isArray(msg.suggestedWords) ? msg.suggestedWords.join(',') : '';
+    
+    // Create a composite hash
+    return `${timestamp}-${player}-${messageText}-${suggestedWords}`;
+  };
+
+const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     
-    const ws = new WebSocket(`ws://${window.location.host}/ws`);
+    // Use secure connection when appropriate
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
     wsRef.current = ws;
     
     ws.onopen = () => {
-      console.log('WebSocket connected');
+      console.log('🌐 WebSocket connected');
       reconnectAttempts.current = 0;
       ws.send(JSON.stringify({ 
         type: 'join', 
         gameId,
         clientId: clientId.current
       }));
+      console.log('⬆️ Sent join message for game:', gameId);
     };
     
     ws.onclose = () => {
@@ -58,12 +78,20 @@ export function useGame(gameId?: number) {
     if (!ws) return;
 
     ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('📥 WEBSOCKET MESSAGE RECEIVED:', {
+          type: data.type,
+          team: data.team,
+          parsedData: data,
+          currentGameState: game ? { id: game.id, discussionCount: game.teamDiscussion?.length } : null
+        });
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error, event.data);
+        return;
+      }
+      
       const data = JSON.parse(event.data);
-      console.log('📥 WEBSOCKET MESSAGE RECEIVED:', {
-        rawData: event.data,
-        parsedData: data,
-        currentGameState: game
-      });
       
       if (data.type === 'error') {
         console.error('Server error:', data.message);
@@ -106,7 +134,7 @@ export function useGame(gameId?: number) {
         return;
       }
 
-      if (data.type === 'discussion' || data.type === 'guess') {
+      if (data.type === 'discussion' || data.type === 'guess' || data.type === 'word_votes' || data.type === 'meta_vote') {
         console.log('💬 Received message:', {
           type: data.type,
           team: data.team,
@@ -132,43 +160,144 @@ export function useGame(gameId?: number) {
             fullState: prev
           });
 
-          const newState = {
-            ...prev,
-            teamDiscussion: [
+          // Start with the base game state
+          const newState = { ...prev };
+          
+          // Handle different message types
+          if (data.type === 'discussion') {
+            // Create a new discussion entry
+            const newEntry: TeamDiscussionEntry = {
+              team: data.team,
+              player: data.player,
+              message: data.message,
+              confidences: data.confidences || [data.confidence || 0],
+              suggestedWords: data.suggestedWords || [],
+              timestamp: data.timestamp,
+              isVoting: data.isVoting,
+              voteType: data.voteType,
+              timeInfo: data.timeInfo
+            };
+            
+            // If old-style suggestedWord is present, convert to array format
+            if (data.suggestedWord && (!newEntry.suggestedWords || newEntry.suggestedWords.length === 0)) {
+              newEntry.suggestedWords = [data.suggestedWord];
+            }
+            
+            // Check for duplicates using our hash function
+            const messageHash = hashMessage(newEntry);
+            
+            if (messageHash && !processedMessages.current.has(messageHash)) {
+              // Mark as processed
+              processedMessages.current.add(messageHash);
+              
+              // Add to discussion array
+              newState.teamDiscussion = [
+                ...(prev.teamDiscussion || []),
+                newEntry
+              ];
+              
+              console.log(`✍️ Added new message from ${newEntry.player} with hash ${messageHash}`);
+            } else if (messageHash) {
+              console.log(`🔄 Skipped duplicate message with hash ${messageHash}`);
+              // Just return the existing state for duplicates
+              return prev;
+            } else {
+              // Still add the message if hash couldn't be computed
+              newState.teamDiscussion = [
+                ...(prev.teamDiscussion || []),
+                newEntry
+              ];
+            }
+          } 
+          else if (data.type === 'guess') {
+            // Add guess to discussion
+            newState.teamDiscussion = [
               ...(prev.teamDiscussion || []),
-              ...(data.type === 'discussion' ? [{
-                team: data.team,
-                player: data.player,
-                message: data.message,
-                confidence: data.confidence || 0,
-                suggestedWord: data.suggestedWord,
-                timestamp: data.timestamp
-              }] : []),
-              ...(data.type === 'guess' ? [{
+              {
                 team: data.team,
                 player: 'Game' as const,
                 message: `Guessed: ${data.content}`,
-                confidence: 1,
-                suggestedWord: data.content,
+                confidences: [1],
+                suggestedWords: [data.content],
                 timestamp: data.timestamp
-              }] : [])
-            ] as TeamDiscussionEntry[],
-            revealedCards: data.type === 'guess'
-              ? [...(prev.revealedCards || []), data.content]
-              : prev.revealedCards,
-          };
+              }
+            ];
+            
+            // Update revealed cards
+            newState.revealedCards = [...(prev.revealedCards || []), data.content];
+          }
+          else if (data.type === 'word_votes') {
+            console.log('💠 Processing word votes:', data);
+            // Make sure the data is properly structured
+            if (data.words && Array.isArray(data.words)) {
+              // Store word votes in consensusVotes
+              const newVotes = data.words.flatMap(wordData => {
+                if (!wordData || !wordData.voters || !Array.isArray(wordData.voters)) {
+                  console.warn('Invalid word vote data:', wordData);
+                  return [];
+                }
+                return wordData.voters.map(voter => ({
+                  team: data.team,
+                  player: voter.player,
+                  word: wordData.word,
+                  approved: true,
+                  confidence: voter.confidence || 0.5,
+                  timestamp: data.timestamp || Date.now()
+                }));
+              });
+              
+              // Append new votes to existing ones with deduplication
+              const existingVotes = prev.consensusVotes || [];
+              const voteMap = new Map();
+              
+              // Index existing votes
+              existingVotes.forEach(vote => {
+                voteMap.set(`${vote.player}-${vote.word}`, vote);
+              });
+              
+              // Add or update with new votes
+              newVotes.forEach(vote => {
+                voteMap.set(`${vote.player}-${vote.word}`, vote);
+              });
+              
+              newState.consensusVotes = Array.from(voteMap.values());
+              console.log('Updated consensus votes:', newState.consensusVotes);
+            }
+          }
+          else if (data.type === 'meta_vote') {
+            console.log('💠 Processing meta vote:', data);
+            if (data.voters && Array.isArray(data.voters)) {
+              // Store meta votes with deduplication
+              const existingVotes = prev.metaVotes || [];
+              const voteMap = new Map();
+              
+              // Index existing votes
+              existingVotes.forEach(vote => {
+                voteMap.set(`${vote.player}-${vote.action}`, vote);
+              });
+              
+              // Add new votes
+              data.voters.forEach(voter => {
+                const newVote = {
+                  team: data.team,
+                  player: voter.player,
+                  action: data.action,
+                  timestamp: data.timestamp || Date.now(),
+                  confidence: voter.confidence || 0.5
+                };
+                voteMap.set(`${voter.player}-${data.action}`, newVote);
+              });
+              
+              newState.metaVotes = Array.from(voteMap.values());
+              console.log('Updated meta votes:', newState.metaVotes);
+            }
+          }
 
-          console.log('📝 New discussion entry:', {
+          console.log('📝 New state after update:', {
             type: data.type,
-            messageCount: newState.teamDiscussion.length,
-            lastMessage: newState.teamDiscussion[newState.teamDiscussion.length - 1],
-            allMessages: newState.teamDiscussion
-          });
-
-          console.log('✨ NEW GAME STATE:', {
-            oldDiscussionCount: prev.teamDiscussion?.length || 0,
-            newDiscussionCount: newState.teamDiscussion.length,
-            fullNewState: newState
+            messageCount: newState.teamDiscussion?.length,
+            voteCount: newState.consensusVotes?.length,
+            metaVoteCount: newState.metaVotes?.length
           });
 
           return newState;
@@ -239,11 +368,18 @@ export function useGame(gameId?: number) {
             ...(latestGame.teamDiscussion || [])
           ];
           
-          const uniqueDiscussions = Array.from(
-            new Map(allDiscussions.map(msg => 
-              [`${msg.timestamp}-${msg.player}`, msg]
-            )).values()
-          ).sort((a, b) => a.timestamp - b.timestamp);
+          // Merge discussions to avoid duplicates using our hash function
+          const messageMap = new Map();
+          
+          allDiscussions.forEach(msg => {
+            const key = hashMessage(msg);
+            if (key) {
+              messageMap.set(key, msg);
+            }
+          });
+          
+          const uniqueDiscussions = Array.from(messageMap.values())
+            .sort((a, b) => a.timestamp - b.timestamp);
 
           console.log('✨ Merged discussions:', {
             totalMessages: allDiscussions.length,
@@ -270,13 +406,15 @@ export function useGame(gameId?: number) {
   ): any[] {
     const all = [...prev, ...latest];
     const unique = new Map();
+    
     all.forEach(msg => {
-      // Create a composite key. Adjust fields as needed.
-      const key = `${msg.timestamp}-${msg.player}-${msg.message}`;
-      if (!unique.has(key)) {
+      // Use our universal hash function
+      const key = hashMessage(msg);
+      if (key && !unique.has(key)) {
         unique.set(key, msg);
       }
     });
+    
     // Sort by timestamp (ascending)
     return Array.from(unique.values()).sort((a, b) => a.timestamp - b.timestamp);
   }

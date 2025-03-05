@@ -19,7 +19,7 @@ import type { BamlRuntime, FunctionResult, BamlCtxManager, Image, Audio, ClientR
 import { toBamlError } from "@boundaryml/baml"
 import type { Checked, Check, RecursivePartialNull as MovedRecursivePartialNull } from "./types"
 import type * as types from "./types"
-import type {GameAnalysis, GameState, Resume, SpymasterClue} from "./types"
+import type {ConsensusLevel, Decision, GameAnalysis, GameState, Guess, GuessDiscussion, MetaDecision, Resume, Risk, SpymasterClue} from "./types"
 import type TypeBuilder from "./type_builder"
 import { DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_CTX, DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME } from "./globals"
 
@@ -66,6 +66,26 @@ export class BamlSyncClient {
     }
   }
   
+  DetermineNextAction(
+      state: GameState,currentClue: SpymasterClue,previousGuesses: Guess[],previousDiscussion: GuessDiscussion,
+      __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
+  ): MetaDecision {
+    try {
+    const raw = this.runtime.callFunctionSync(
+      "DetermineNextAction",
+      {
+        "state": state,"currentClue": currentClue,"previousGuesses": previousGuesses,"previousDiscussion": previousDiscussion
+      },
+      this.ctx_manager.cloneContext(),
+      __baml_options__?.tb?.__tb(),
+      __baml_options__?.clientRegistry,
+    )
+    return raw.parsed(false) as MetaDecision
+    } catch (error: any) {
+      throw toBamlError(error);
+    }
+  }
+  
   ExtractResume(
       resume: string,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
@@ -81,6 +101,26 @@ export class BamlSyncClient {
       __baml_options__?.clientRegistry,
     )
     return raw.parsed(false) as Resume
+    } catch (error: any) {
+      throw toBamlError(error);
+    }
+  }
+  
+  FinalizeGuess(
+      state: GameState,discussion: GuessDiscussion,
+      __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
+  ): Guess {
+    try {
+    const raw = this.runtime.callFunctionSync(
+      "FinalizeGuess",
+      {
+        "state": state,"discussion": discussion
+      },
+      this.ctx_manager.cloneContext(),
+      __baml_options__?.tb?.__tb(),
+      __baml_options__?.clientRegistry,
+    )
+    return raw.parsed(false) as Guess
     } catch (error: any) {
       throw toBamlError(error);
     }
@@ -107,14 +147,14 @@ export class BamlSyncClient {
   }
   
   ValidateGuess(
-      word: string,clue: SpymasterClue,state: GameState,model: string,
+      guess: Guess,clue: SpymasterClue,state: GameState,discussion: GuessDiscussion,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry }
   ): GameAnalysis {
     try {
     const raw = this.runtime.callFunctionSync(
       "ValidateGuess",
       {
-        "word": word,"clue": clue,"state": state,"model": model
+        "guess": guess,"clue": clue,"state": state,"discussion": discussion
       },
       this.ctx_manager.cloneContext(),
       __baml_options__?.tb?.__tb(),

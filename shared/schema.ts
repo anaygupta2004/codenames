@@ -23,6 +23,7 @@ export type Game = {
   gameHistory: GameHistoryEntry[];
   teamDiscussion: TeamDiscussionEntry[];
   consensusVotes: ConsensusVote[];
+  metaVotes?: MetaVote[]; // Added for continue/end turn votes
 };
 
 export type GameState = "red_turn" | "blue_turn" | "red_win" | "blue_win" | "time_up";
@@ -30,30 +31,51 @@ export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | 
 export type PlayerType = "human" | AIModel;
 
 export type GameHistoryEntry = {
-  type: "clue" | "guess";
+  type: "clue" | "guess" | "end_turn";
   turn: "red" | "blue";
   content: string;
   timestamp: number;
   relatedClue?: string;
-  word?: string;
+  word: string; // We ensure this is always defined now
   result?: "correct" | "wrong" | "assassin";
+  reasoning?: string; // Added for better game log understanding
 };
+
+export type RiskLevel = "High" | "Medium" | "Low";
 
 export type TeamDiscussionEntry = {
   team: "red" | "blue";
   player: AIModel;
   message: string;
-  confidence: number;
+  confidences: number[];
   timestamp: number;
-  suggestedWord?: string;
+  suggestedWords: string[];
+  risk?: RiskLevel;
+  round?: number;
+  isVoting?: boolean;
+  voteType?: "continue" | "end_turn";
+  voteResult?: string;
 };
+
+export type ConsensusLevel = "High" | "Medium" | "Low" | "None";
 
 export type ConsensusVote = {
   team: "red" | "blue";
-  player: AIModel;
+  player: AIModel | "human";
   word: string;
   approved: boolean;
+  confidence: number;
   timestamp: number;
+  reason?: string;
+  relatedClue?: string; // Reference to the clue that this vote is for
+};
+
+export type MetaVote = {
+  team: "red" | "blue";
+  player: AIModel | "human";
+  action: "continue" | "end_turn" | "discuss_more";
+  timestamp: number;
+  confidence: number;
 };
 
 export const insertGameSchema = z.object({

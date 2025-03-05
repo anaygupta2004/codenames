@@ -45,10 +45,27 @@ export function all_succeeded<CheckName extends string>(checks: Record<CheckName
 export function get_checks<CheckName extends string>(checks: Record<CheckName, Check>): Check[] {
     return Object.values(checks)
 }
+export enum ConsensusLevel {
+  High = "High",
+  Medium = "Medium",
+  Low = "Low",
+}
+
+export enum Decision {
+  Continue = "Continue",
+  ContunueWait = "ContunueWait",
+  EndTurn = "EndTurn",
+}
+
+export enum Risk {
+  High = "High",
+  Medium = "Medium",
+  Low = "Low",
+}
+
 export interface GameAnalysis {
   message: string
-  suggestedMove?: string | null
-  moveConfidence: "high" | "medium" | "low"
+  suggestedMoves: Guess[]
   
 }
 
@@ -59,6 +76,31 @@ export interface GameState {
   opposingWords: string[]
   assassinWord: string
   revealedCards: string[]
+  
+}
+
+export interface Guess {
+  word: string
+  reasoning: string
+  discussion: string
+  risk: Risk
+  
+}
+
+export interface GuessDiscussion {
+  candidateGuesses: Guess[]
+  discussionLog: string[]
+  conversationRounds: number
+  participantContributions: Record<string, number>
+  consensusReached: boolean
+  consensusLevel: ConsensusLevel
+  suggestedAction: Decision
+  
+}
+
+export interface MetaDecision {
+  decision: Decision
+  reasoning: string[]
   
 }
 
