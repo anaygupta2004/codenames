@@ -31,13 +31,13 @@ export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | 
 export type PlayerType = "human" | AIModel;
 
 export type GameHistoryEntry = {
-  type: "clue" | "guess" | "end_turn";
+  type: "clue" | "guess" | "end_turn" | "turn_end" | string;
   turn: "red" | "blue";
   content: string;
   timestamp: number;
   relatedClue?: string;
-  word: string; // We ensure this is always defined now
-  result?: "correct" | "wrong" | "assassin";
+  word?: string; // Make word optional to accommodate different entry types
+  result?: "correct" | "wrong" | "assassin" | "pending";
   reasoning?: string; // Added for better game log understanding
 };
 
@@ -45,7 +45,7 @@ export type RiskLevel = "High" | "Medium" | "Low";
 
 export type TeamDiscussionEntry = {
   team: "red" | "blue";
-  player: AIModel;
+  player: AIModel | "human" | "Game";
   message: string;
   confidences: number[];
   timestamp: number;
@@ -54,7 +54,14 @@ export type TeamDiscussionEntry = {
   round?: number;
   isVoting?: boolean;
   voteType?: "continue" | "end_turn";
-  voteResult?: string;
+  voteResult?: boolean;
+  action?: "vote" | "continue" | "end_turn" | "discuss_more";
+  content?: string;
+  timeInfo?: {
+    turnStartTime: number;
+    turnTimeLimit: number;
+    remainingTime: number;
+  };
 };
 
 export type ConsensusLevel = "High" | "Medium" | "Low" | "None";

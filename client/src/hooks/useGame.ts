@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import type { Game, TeamDiscussionEntry } from '@shared/schema';
+import { queryClient } from '@/lib/queryClient';
 
 export function useGame(gameId?: number) {
   console.log('🎮 useGame INITIALIZED:', { gameId });
@@ -18,57 +19,112 @@ export function useGame(gameId?: number) {
   const processedMessages = useRef(new Set<string>());
 
   // Create a hash function for message uniqueness
+  // Make this less aggressive to avoid filtering out important messages
   const hashMessage = (msg: any): string => {
     if (!msg) return '';
     
     // Extract key fields to identify the message
     const timestamp = msg.timestamp || 0;
     const player = msg.player || '';
-    const messageText = msg.message?.substring(0, 50) || '';
-    const suggestedWords = Array.isArray(msg.suggestedWords) ? msg.suggestedWords.join(',') : '';
+    const message = msg.message || msg.content || '';
     
-    // Create a composite hash
-    return `${timestamp}-${player}-${messageText}-${suggestedWords}`;
+    // Use a more comprehensive hash that includes parts of the message content
+    // This will help distinguish between different messages from the same player at similar times
+    return `${timestamp}-${player}-${message.slice(0, 10)}`;
   };
 
 const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('⚠️ WebSocket already connected, skipping connection');
+      return wsRef.current;
+    }
+    
+    if (wsRef.current?.readyState === WebSocket.CONNECTING) {
+      console.log('⚠️ WebSocket already connecting, skipping connection');
+      return wsRef.current;
+    }
+    
+    console.log('🔌 Creating new WebSocket connection...');
     
     // Use secure connection when appropriate
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
-    wsRef.current = ws;
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
     
-    ws.onopen = () => {
-      console.log('🌐 WebSocket connected');
-      reconnectAttempts.current = 0;
-      ws.send(JSON.stringify({ 
-        type: 'join', 
-        gameId,
-        clientId: clientId.current
-      }));
-      console.log('⬆️ Sent join message for game:', gameId);
-    };
+    try {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+      
+      // Handle connection established
+      ws.onopen = () => {
+        console.log('🌐 WebSocket connected successfully');
+        reconnectAttempts.current = 0;
+        
+        // Wait a tiny bit before sending join to ensure the socket is fully ready
+        setTimeout(() => {
+          try {
+            if (ws.readyState === WebSocket.OPEN) {
+              console.log('⬆️ Sending join message for game:', gameId);
+              ws.send(JSON.stringify({ 
+                type: 'join', 
+                gameId,
+                clientId: clientId.current
+              }));
+            } else {
+              console.error('❌ Cannot send join message - WebSocket not open');
+            }
+          } catch (sendError) {
+            console.error('❌ Error sending join message:', sendError);
+          }
+        }, 100);
+      };
     
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-      wsRef.current = null;
+    ws.onclose = (event) => {
+      console.log(`🔌 WebSocket disconnected: Code ${event.code}, clean: ${event.wasClean}`);
+      
+      // Only set to null if this is the current websocket
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
       
       // Try to reconnect unless we're cleaning up or have tried too many times
       if (!cleanupRef.current && reconnectAttempts.current < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts.current++;
         const timeout = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000);
-        console.log(`Attempting to reconnect in ${timeout}ms...`);
+        console.log(`🔄 Attempting to reconnect in ${timeout}ms... (attempt ${reconnectAttempts.current}/${MAX_RECONNECT_ATTEMPTS})`);
         setTimeout(connect, timeout);
+      } else if (reconnectAttempts.current >= MAX_RECONNECT_ATTEMPTS) {
+        console.error(`❌ Maximum reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached.`);
       }
     };
     
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+    ws.onerror = (event) => {
+      console.error('❌ WebSocket error:', event);
+      
+      // If we haven't sent the join message yet, try to reconnect immediately
+      if (reconnectAttempts.current === 0) {
+        console.log('🔄 Immediate reconnect after error');
+        // Only null out if this is our current socket
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
+        // Try to reconnect with delay
+        setTimeout(connect, 1000);
+      }
     };
-    
     return ws;
-  }, [gameId]);
+    } catch (connectionError) {
+      console.error('❌ Error creating WebSocket connection:', connectionError);
+      // Try again once after error
+      setTimeout(() => {
+        console.log('🔄 Retrying connection after error');
+        // Only attempt if we haven't already got one
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+          connect();
+        }
+      }, 1000);
+      return null;
+    }
+  }, [gameId, clientId]);
 
   useEffect(() => {
     if (cleanupRef.current) return;
@@ -78,8 +134,9 @@ const connect = useCallback(() => {
     if (!ws) return;
 
     ws.onmessage = (event) => {
+      let data;
       try {
-        const data = JSON.parse(event.data);
+        data = JSON.parse(event.data);
         console.log('📥 WEBSOCKET MESSAGE RECEIVED:', {
           type: data.type,
           team: data.team,
@@ -90,8 +147,6 @@ const connect = useCallback(() => {
         console.error('Error parsing WebSocket message:', error, event.data);
         return;
       }
-      
-      const data = JSON.parse(event.data);
       
       if (data.type === 'error') {
         console.error('Server error:', data.message);
@@ -133,19 +188,71 @@ const connect = useCallback(() => {
         localStorage.setItem('clientId', clientId.current);
         return;
       }
+      
+      // Handle discussion cleared event
+      if (data.type === 'discussion_cleared') {
+        console.log(`🧹 Discussion cleared for team ${data.team}`);
+        
+        // Clear local discussion state for this team
+        setGame(prev => {
+          if (!prev) return prev;
+          
+          // Filter out all messages from this team that aren't turn change messages
+          const filteredDiscussion = (prev.teamDiscussion || []).filter(msg => 
+            msg.team !== data.team || msg.isTurnChange === true
+          );
+          
+          // Reset all voting state
+          const filteredConsensusVotes = (prev.consensusVotes || []).filter(v => 
+            v.team !== data.team
+          );
+          
+          const filteredMetaVotes = (prev.metaVotes || []).filter(v => 
+            v.team !== data.team
+          );
+          
+          return {
+            ...prev,
+            teamDiscussion: filteredDiscussion,
+            consensusVotes: filteredConsensusVotes,
+            metaVotes: filteredMetaVotes
+          };
+        });
+        
+        // Clear the processed messages cache too
+        processedMessages.current = new Set();
+        
+        // Force refresh game data
+        queryClient.invalidateQueries({ 
+          queryKey: [`/api/games/${gameId}`],
+          refetchType: 'active'
+        });
+        
+        return;
+      }
 
-      if (data.type === 'discussion' || data.type === 'guess' || data.type === 'word_votes' || data.type === 'meta_vote') {
+      if (data.type === 'discussion' || data.type === 'guess' || data.type === 'word_votes' || data.type === 'meta_vote' || data.type === 'turn_change') {
         console.log('💬 Received message:', {
           type: data.type,
           team: data.team,
           player: data.player,
+          content: data.content?.substring(0, 30) + '...',
+          hasTimeInfo: !!data.timeInfo,
+          hasVoting: data.isVoting,
+          voteType: data.voteType,
           messageCount: game?.teamDiscussion?.length
+        });
+        
+        // CRITICAL: Force an immediate refresh of the game data
+        queryClient.invalidateQueries({ 
+          queryKey: [`/api/games/${gameId}`],
+          refetchType: 'active' 
         });
 
         setGame(prev => {
           console.log('💫 UPDATING GAME STATE:', {
-            previousState: prev,
-            newMessage: data
+            previousState: prev ? { id: prev.id, messageCount: prev.teamDiscussion?.length } : null,
+            newMessage: { type: data.type, player: data.player }
           });
 
           if (!prev) {
@@ -153,61 +260,88 @@ const connect = useCallback(() => {
             return prev;
           }
 
-          console.log('🔍 Game state before update:', {
-            id: prev.id,
-            currentTurn: prev.currentTurn,
-            discussionCount: prev.teamDiscussion?.length,
-            fullState: prev
-          });
-
           // Start with the base game state
           const newState = { ...prev };
           
           // Handle different message types
           if (data.type === 'discussion') {
-            // Create a new discussion entry
+            // Create a new discussion entry - ensure all fields are properly mapped
             const newEntry: TeamDiscussionEntry = {
               team: data.team,
               player: data.player,
-              message: data.message,
-              confidences: data.confidences || [data.confidence || 0],
+              message: data.content || data.message || '', // Support both content and message fields
+              confidences: data.confidences || [data.confidence || 0.5],
               suggestedWords: data.suggestedWords || [],
               timestamp: data.timestamp,
-              isVoting: data.isVoting,
-              voteType: data.voteType,
+              isVoting: Boolean(data.isVoting),
+              voteType: data.voteType || '',
               timeInfo: data.timeInfo
             };
+            
+            // Always ensure we have proper arrays for suggestedWords and confidences
+            if (!newEntry.suggestedWords) {
+              newEntry.suggestedWords = [];
+            }
             
             // If old-style suggestedWord is present, convert to array format
             if (data.suggestedWord && (!newEntry.suggestedWords || newEntry.suggestedWords.length === 0)) {
               newEntry.suggestedWords = [data.suggestedWord];
             }
             
-            // Check for duplicates using our hash function
-            const messageHash = hashMessage(newEntry);
-            
-            if (messageHash && !processedMessages.current.has(messageHash)) {
-              // Mark as processed
-              processedMessages.current.add(messageHash);
+            // Ensure confidences array matches suggestedWords length
+            if (newEntry.suggestedWords.length > 0 && 
+                (!newEntry.confidences || newEntry.confidences.length < newEntry.suggestedWords.length)) {
               
-              // Add to discussion array
-              newState.teamDiscussion = [
-                ...(prev.teamDiscussion || []),
-                newEntry
-              ];
-              
-              console.log(`✍️ Added new message from ${newEntry.player} with hash ${messageHash}`);
-            } else if (messageHash) {
-              console.log(`🔄 Skipped duplicate message with hash ${messageHash}`);
-              // Just return the existing state for duplicates
-              return prev;
-            } else {
-              // Still add the message if hash couldn't be computed
-              newState.teamDiscussion = [
-                ...(prev.teamDiscussion || []),
-                newEntry
-              ];
+              // Create a confidences array that matches the length of suggestedWords
+              const baseConfidence = data.confidence || 0.7;
+              newEntry.confidences = newEntry.suggestedWords.map((_, idx) => {
+                // Scale confidence down for each subsequent word
+                return Math.max(0.3, baseConfidence * (1 - idx * 0.15));
+              });
             }
+            
+            // For debugging - log the actual message content
+            console.log(`📨 Message from ${data.player}: ${newEntry.message}`);
+            console.log(`Has suggested words: ${Boolean(newEntry.suggestedWords && newEntry.suggestedWords.length > 0)}`);
+            if (newEntry.suggestedWords.length > 0) {
+              console.log(`Words: ${newEntry.suggestedWords.join(', ')}`);
+              console.log(`Confidences: ${newEntry.confidences?.join(', ')}`);
+            }
+            
+            // IMPORTANT: Do not filter out messages, always add them
+            // We'll just use a better hash function to detect true duplicates
+            const messageHash = hashMessage(newEntry);
+            let isDuplicate = messageHash && processedMessages.current.has(messageHash);
+            
+            if (isDuplicate) {
+              console.log(`⚠️ Possible duplicate detected with hash ${messageHash}`);
+              // If hash matches, but it has voting information, keep it anyway
+              if (newEntry.isVoting || newEntry.suggestedWords.length > 0) {
+                console.log(`🔄 Message has voting/suggestion data, adding anyway`);
+                isDuplicate = false;
+              }
+            }
+            
+            // Only track actual duplicates by hash
+            if (!isDuplicate && messageHash) {
+              processedMessages.current.add(messageHash);
+            }
+            
+            // CRITICAL: Do not drop messages with suggestions or voting
+            // Better to have duplicates than miss important messages
+            newState.teamDiscussion = [
+              ...(prev.teamDiscussion || []),
+              newEntry
+            ];
+            
+            console.log(`✅ Added message from ${newEntry.player}, isVoting: ${newEntry.isVoting}, suggestedWords: ${newEntry.suggestedWords.length}, type: ${newEntry.voteType}`);
+            
+            // IMPORTANT: Force a cache update to ensure React Query pulls the new message
+            // This ensures messages appear in both TeamDiscussion and useGame state
+            queryClient.invalidateQueries({ 
+              queryKey: [`/api/games/${gameId}`],
+              refetchType: 'active' 
+            });
           } 
           else if (data.type === 'guess') {
             // Add guess to discussion
@@ -216,15 +350,21 @@ const connect = useCallback(() => {
               {
                 team: data.team,
                 player: 'Game' as const,
-                message: `Guessed: ${data.content}`,
+                message: `Guessed: ${data.content || data.word}`,
                 confidences: [1],
-                suggestedWords: [data.content],
+                suggestedWords: [data.content || data.word],
                 timestamp: data.timestamp
               }
             ];
             
             // Update revealed cards
-            newState.revealedCards = [...(prev.revealedCards || []), data.content];
+            const guessedWord = data.content || data.word;
+            newState.revealedCards = [...(prev.revealedCards || [])];
+            
+            // Only add if not already revealed
+            if (guessedWord && !newState.revealedCards.includes(guessedWord)) {
+              newState.revealedCards.push(guessedWord);
+            }
           }
           else if (data.type === 'word_votes') {
             console.log('💠 Processing word votes:', data);
@@ -290,6 +430,70 @@ const connect = useCallback(() => {
               
               newState.metaVotes = Array.from(voteMap.values());
               console.log('Updated meta votes:', newState.metaVotes);
+            }
+          }
+          else if (data.type === 'turn_change') {
+            console.log('🔄 Processing turn change:', data);
+            
+            // CRITICAL: Reset the game's turn state immediately
+            newState.currentTurn = data.to === 'red' ? 'red_turn' : 'blue_turn';
+            
+            // Reset the turn timer by updating current start time
+            // THIS IS CRITICAL for proper timer function
+            newState.currentTurnStartTime = new Date();
+            
+            // Get detailed reason with word information if available
+            let reasonText = data.reason || '';
+            if (data.word) {
+              reasonText += ` (word: ${data.word})`;
+            }
+            if (data.highPriority || data.forced) {
+              reasonText += ' [forced]';
+            }
+            
+            // Create a richer message with reason if available
+            const message = `Turn ended${reasonText ? ` (${reasonText})` : ''}. ${data.to.toUpperCase()} team's turn now.`;
+            
+            // Add a prominent notification message to the discussion
+            newState.teamDiscussion = [
+              ...(prev.teamDiscussion || []),
+              {
+                team: data.from,
+                player: 'Game' as const,
+                message: message,
+                confidences: [1],
+                suggestedWords: [],
+                timestamp: data.timestamp || Date.now(),
+                // Special flag for turn change messages
+                isTurnChange: true,
+                // Mark as high priority for forced turn changes
+                highPriority: data.highPriority || data.forced || data.reason === 'time_expired'
+              }
+            ];
+            
+            // Also add message to other team's discussion for ALL turn changes
+            // This ensures both teams are aware of turn changes
+            newState.teamDiscussion.push({
+              team: data.to,
+              player: 'Game' as const,
+              message: `${data.from.toUpperCase()} team's turn ended${reasonText ? ` (${reasonText})` : ''}. It's your turn now!`,
+              confidences: [1],
+              suggestedWords: [],
+              timestamp: (data.timestamp || Date.now()) + 1,
+              // Special flags for turn change messages
+              isTurnChange: true, 
+              isTurnStart: true,
+              highPriority: data.highPriority || data.forced || data.reason === 'time_expired'
+            });
+            
+            // CRITICAL: For timer expiration and other forced turn changes, we need to ensure
+            // the client state is fully reset for the new turn
+            if (data.reason === 'time_expired' || data.highPriority || data.forced) {
+              console.log('🚨 FORCED TURN CHANGE - Resetting client state');
+              
+              // Clear any active votes or discussions as the turn has forcibly ended
+              newState.metaVotes = newState.metaVotes?.filter(v => v.team !== data.from) || [];
+              newState.consensusVotes = newState.consensusVotes?.filter(v => v.team !== data.from) || [];
             }
           }
 

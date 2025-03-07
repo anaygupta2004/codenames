@@ -24,9 +24,10 @@ type ExtendedTeamDiscussionEntry = TeamDiscussionEntry & {
   confidence?: number; // Legacy field - we'll handle both formats
   // Handle both single word and multiple words
   suggestedWord?: string;
-  suggestedWords?: string[];
   // Support legacy confidence field and new array
   confidences?: number[];
+  // Support both content and message fields
+  content?: string;
   timeInfo?: {
     turnStartTime: number;
     turnTimeLimit: number;
@@ -51,6 +52,9 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
       percentage: number;
     }
   }>({});
+  
+  // Add revealed cards state to avoid voting on already guessed words
+  const [revealedCards, setRevealedCards] = useState<string[]>([]);
 
   const [metaVotes, setMetaVotes] = useState<{
     action: 'continue' | 'end_turn' | 'discuss_more';
@@ -72,54 +76,160 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
     messageCount: messages?.length
   });
 
+  // Track local state for discussion messages to avoid issues with props
+  const [localDiscussion, setLocalDiscussion] = useState<TeamDiscussionEntry[]>([]);
+  
   // Debug: Log every time component receives props
   useEffect(() => {
     console.log('💬 TeamDiscussion received props:', {
       hasMessages: !!messages,
       messageCount: messages?.length,
-      messageTypes: messages?.map(m => ({ type: m.type, team: m.team })),
       messages
     });
+    
+    // Always update our local state with the latest message data
+    if (messages && messages.length > 0) {
+      // Update local state directly to ensure immediate UI update
+      setLocalDiscussion(prev => {
+        // Create a merged set without duplicates
+        const newMessages = [...prev];
+        const existingMsgIds = new Set(prev.map(m => `${m.timestamp}-${m.player}`));
+        
+        messages.forEach(msg => {
+          // Ensure message field is properly populated from either message or content field
+          const processedMsg = {
+            ...msg,
+            // Make sure message field is always populated
+            message: msg.message || msg.content || ''
+          };
+          
+          const msgId = `${processedMsg.timestamp}-${processedMsg.player}`;
+          if (!existingMsgIds.has(msgId)) {
+            newMessages.push(processedMsg);
+          }
+        });
+        
+        console.log(`📝 Updated localDiscussion: ${newMessages.length} messages`);
+        return newMessages;
+      });
+    } else if (messages && messages.length === 0) {
+      // If we receive an empty messages array, clear our local state too
+      console.log('🧹 Received empty messages array - clearing local discussion');
+      setLocalDiscussion([]);
+    }
   }, [messages]);
-
-  // Ensure messages is always an array
-  const validMessages = messages || [];
+  
+  // ALWAYS use both props and local state for maximum chance of displaying messages
+  console.log('🔍 SHOWING MESSAGES:', {
+    propsMessages: messages?.length || 0,
+    localMessages: localDiscussion?.length || 0
+  });
+  
+  // Combine both sources of messages to ensure we don't miss any
+  // But also deduplicate them using a more comprehensive hash
+  const messageMap = new Map();
+  
+  // Custom hash function to better identify unique messages
+  const getMessageHash = (msg: any): string => {
+    if (!msg) return '';
+    
+    // Extract key fields to identify the message
+    const timestamp = msg.timestamp || 0;
+    const player = msg.player || '';
+    const message = msg.message || msg.content || '';
+    
+    // Include a bit of message content to better distinguish messages
+    return `${timestamp}-${player}-${message.slice(0, 10)}`;
+  };
+  
+  // First add all messages from props
+  (messages || []).forEach(msg => {
+    // Ensure message has the content field (some messages only have content, not message)
+    const processedMsg = {
+      ...msg,
+      message: msg.message || msg.content || '' // Ensure message field is populated
+    };
+    
+    const key = getMessageHash(processedMsg);
+    messageMap.set(key, processedMsg);
+  });
+  
+  // Then add local messages
+  (localDiscussion || []).forEach(msg => {
+    const processedMsg = {
+      ...msg,
+      message: msg.message || msg.content || '' // Ensure message field is populated
+    };
+    
+    const key = getMessageHash(processedMsg);
+    messageMap.set(key, processedMsg);
+  });
+  
+  // Convert back to array and sort by timestamp
+  const validMessages = Array.from(messageMap.values())
+    .sort((a, b) => a.timestamp - b.timestamp);
+  
+  // Ensure all messages have required fields - avoid undefined errors
+  const normalizedMessages = validMessages.map(msg => ({
+    ...msg,
+    message: msg.message || msg.content || '',
+    confidences: msg.confidences || [msg.confidence || 0.5],
+    suggestedWords: msg.suggestedWords || (msg.suggestedWord ? [msg.suggestedWord] : [])
+  }));
 
   // WebSocket for real-time voting
   useEffect(() => {
-    // Init state from messages prop
-    const initFromMessages = () => {
-      // Find messages with suggested words and populate wordVotes
-      console.log('🔄 Initializing vote state from messages');
-      
-      // Process any votes already in the messages
-      if (messages && Array.isArray(messages)) {
-        const newWordVotes = {...wordVotes};
-        const wordsWithSuggestions = new Set<string>();
+    // Init state from messages prop and fetch current game state
+    const initFromMessages = async () => {
+      try {
+        // Get current game state to know revealed cards
+        const res = await fetch(`/api/games/${gameId}`);
+        const game = await res.json();
         
-        // Collect all suggested words
-        messages.forEach(msg => {
-          if (msg.suggestedWords && Array.isArray(msg.suggestedWords)) {
-            msg.suggestedWords.forEach(word => wordsWithSuggestions.add(word));
-          }
-        });
-        
-        // Initialize all with empty votes
-        Array.from(wordsWithSuggestions).forEach(word => {
-          if (!newWordVotes[word]) {
-            newWordVotes[word] = {
-              votes: 0,
-              voters: [],
-              percentage: 0
-            };
-          }
-        });
-        
-        // Only update if we have suggestions
-        if (wordsWithSuggestions.size > 0) {
-          console.log('📊 Initialized votes for words:', Array.from(wordsWithSuggestions));
-          setWordVotes(newWordVotes);
+        // Store revealed cards to skip them for voting
+        if (game?.revealedCards) {
+          setRevealedCards(game.revealedCards);
         }
+        
+        // Find messages with suggested words and populate wordVotes
+        console.log('🔄 Initializing vote state from messages');
+        
+        // Process any votes already in the messages
+        if (messages && Array.isArray(messages)) {
+          const newWordVotes = {...wordVotes};
+          const wordsWithSuggestions = new Set<string>();
+          
+          // Collect all suggested words that haven't been revealed yet
+          messages.forEach(msg => {
+            if (msg.suggestedWords && Array.isArray(msg.suggestedWords)) {
+              msg.suggestedWords.forEach(word => {
+                // Only add words that haven't been revealed yet
+                if (!game?.revealedCards?.includes(word)) {
+                  wordsWithSuggestions.add(word);
+                }
+              });
+            }
+          });
+          
+          // Initialize all with empty votes
+          Array.from(wordsWithSuggestions).forEach(word => {
+            if (!newWordVotes[word]) {
+              newWordVotes[word] = {
+                votes: 0,
+                voters: [],
+                percentage: 0
+              };
+            }
+          });
+          
+          // Only update if we have suggestions
+          if (wordsWithSuggestions.size > 0) {
+            console.log('📊 Initialized votes for words:', Array.from(wordsWithSuggestions));
+            setWordVotes(newWordVotes);
+          }
+        }
+      } catch (error) {
+        console.error("Error initializing from messages:", error);
       }
     };
     
@@ -155,6 +265,45 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
         const data = JSON.parse(event.data);
         console.log('🔔 TeamDiscussion WebSocket message received:', data);
         
+        // If we receive a guess, update our revealed cards list
+        if (data.type === 'guess' && data.word) {
+          console.log(`📋 Word guessed: ${data.word}`);
+          setRevealedCards(prev => {
+            if (!prev.includes(data.word)) {
+              return [...prev, data.word];
+            }
+            return prev;
+          });
+          
+          // Also update word votes to remove the guessed word
+          setWordVotes(prev => {
+            const newVotes = {...prev};
+            // Remove the guessed word from votes
+            if (newVotes[data.word]) {
+              delete newVotes[data.word];
+            }
+            return newVotes;
+          });
+          
+          // Add a meta decision for this team after a correct guess
+          if (data.result === 'correct' && data.team === team) {
+            console.log('✅ Correct guess - triggering meta decision');
+            
+            // Send a meta decision message
+            setTimeout(() => {
+              fetch(`/api/games/${gameId}/meta/discuss`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  message: "Should we continue guessing or end turn?",
+                  team,
+                  triggerVoting: true
+                })
+              }).catch(err => console.error("Error triggering meta vote:", err));
+            }, 1000);
+          }
+        }
+        
         // Process word votes
         if (data.type === 'word_votes') {
           console.log('🗳️ Received word votes:', data);
@@ -164,7 +313,8 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
           
           if (Array.isArray(data.words)) {
             data.words.forEach((wordData: any) => {
-              if (wordData && wordData.word) {
+              // Skip votes for already revealed words
+              if (wordData?.word && !revealedCards.includes(wordData.word)) {
                 newWordVotes[wordData.word] = {
                   votes: wordData.votes || 0,
                   voters: Array.isArray(wordData.voters) ? wordData.voters : [],
@@ -210,7 +360,7 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
     };
   }, [gameId]);
 
-  // Handle voting for a word
+  // Enhanced word voting with automatic voting for high-confidence suggestions
   const handleWordVote = async (word: string, team: string) => {
     // Check if we have a custom vote handler from parent component
     if (onVote) {
@@ -284,6 +434,187 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
       console.error('Error submitting vote:', error);
     }
   };
+  
+  // Enhanced automatic voting effect for high-confidence words
+  useEffect(() => {
+    if (!team || !gameId || !messages || messages.length === 0) return;
+    
+    // Find high-confidence suggestions from the last few messages
+    const recentMessages = messages.slice(-5);
+    
+    // Track words that have been auto-voted
+    const autoVotedWords = new Set<string>();
+    
+    // Get current game state to check revealed cards
+    fetch(`/api/games/${gameId}`)
+      .then(res => res.json())
+      .then(game => {
+        const revealedCards = game?.revealedCards || [];
+        
+        // Process messages to find high-confidence suggestions  
+        recentMessages.forEach(msg => {
+          if (!msg.suggestedWords || msg.suggestedWords.length === 0) return;
+          
+          // Only consider messages from the same team
+          if (msg.team !== team) return;
+          
+          // Check for high confidence suggestions
+          msg.suggestedWords.forEach((word, idx) => {
+            // Skip already revealed cards
+            if (revealedCards.includes(word)) {
+              console.log(`⚠️ Skipping already revealed card: ${word}`);
+              return;
+            }
+            
+            // Get confidence for this word
+            const confidence = msg.confidences && msg.confidences[idx] !== undefined 
+              ? msg.confidences[idx] 
+              : (msg.confidence || 0.5);
+            
+            // Auto vote for high confidence words (above 0.8)
+            if (confidence >= 0.8 && !autoVotedWords.has(word)) {
+              console.log(`🤖 AUTO-VOTING for high confidence word: ${word} (${confidence * 100}%)`);
+              
+              // Use a small timeout to not spam the voting API
+              setTimeout(() => {
+                handleWordVote(word, team);
+                autoVotedWords.add(word);
+              }, 500 * autoVotedWords.size); // Stagger auto-votes
+            }
+          });
+        });
+      })
+      .catch(err => console.error("Error checking revealed cards:", err));
+  }, [messages, team, gameId]);
+
+  // New automatic effect for meta-voting (continue/end turn)
+  useEffect(() => {
+    if (!team || !gameId || !messages || messages.length === 0) return;
+    
+    // Only process the most recent messages for meta-voting
+    const recentMessages = messages.slice(-5);
+    
+    // Look for voting messages that need automated meta voting
+    const votingMessages = recentMessages.filter(msg => 
+      msg.isVoting && 
+      msg.voteType && 
+      msg.team === team
+    );
+    
+    // Check for recent guess messages to ensure meta decisions always happen after EVERY guess
+    const guessMessages = recentMessages.filter(msg => 
+      msg.player === 'Game' && 
+      msg.message?.includes('Guessed:') && 
+      !msg.message?.includes('wrong') && 
+      !msg.message?.includes('neutral') && 
+      !msg.message?.includes('opponent')
+    );
+    
+    // Force a meta decision after EVERY correct guess if no voting message exists
+    if (guessMessages.length > 0 && votingMessages.length === 0) {
+      console.log('🎮 Detected correct guess without meta decision - creating one');
+      
+      // Create meta decision message with Among Us style UI
+      const metaDecisionMsg = {
+        team,
+        player: 'Game',
+        message: "Team must decide: continue guessing or end turn?",
+        isVoting: true,
+        voteType: 'meta_decision',
+        timestamp: Date.now(),
+        metaOptions: ['continue', 'end_turn'] // Allow UI to render the options
+      };
+      
+      // Send via WebSocket for real-time updates
+      if (onVote) {
+        // Send the discussion message via WebSocket
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        const ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+          ws.send(JSON.stringify({
+            ...metaDecisionMsg,
+            type: 'discussion',
+            gameId: Number(gameId)
+          }));
+          ws.close(); // Close after sending
+        };
+      }
+      
+      // Also send a meta vote request to trigger server-side decision process
+      setTimeout(() => {
+        fetch(`/api/games/${gameId}/meta/discuss`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: "Should we continue guessing or end turn?",
+            team,
+            triggerVoting: true
+          })
+        }).catch(err => console.error("Error triggering meta vote:", err));
+      }, 500);
+      
+      return;
+    }
+    
+    if (votingMessages.length === 0) return;
+    
+    // Get the most recent voting message
+    const latestVotingMsg = votingMessages[votingMessages.length - 1];
+    
+    // Auto-vote for continue only for Team AI members
+    const shouldAutoVote = latestVotingMsg.player !== 'human' && latestVotingMsg.player !== 'Game';
+    
+    if (shouldAutoVote) {
+      console.log(`🤖 AUTO-VOTING for meta action: ${latestVotingMsg.voteType || 'continue'}`);
+      
+      // Use a small delay before auto-voting
+      setTimeout(() => {
+        handleMetaVote(latestVotingMsg.voteType === 'end_turn' ? 'end_turn' : 'continue', team);
+      }, 1500);
+    }
+    
+    // TIMER EXPIRATION: Check for remaining time and auto-end turn if near zero
+    // Find messages with time info to check for timer expiration
+    const messagesWithTime = messages.filter(msg => msg.timeInfo && typeof msg.timeInfo.remainingTime === 'number');
+    
+    if (messagesWithTime.length > 0) {
+      // Get the most recent message with time info
+      const lastTimeMsg = messagesWithTime[messagesWithTime.length - 1];
+      
+      if (lastTimeMsg.timeInfo && lastTimeMsg.timeInfo.remainingTime <= 3) {
+        // If timer is very close to expiration (3 seconds or less), auto-end turn
+        console.log(`⏰ TIMER ABOUT TO EXPIRE (${lastTimeMsg.timeInfo.remainingTime}s) - Auto-ending turn`);
+        
+        // Auto-end turn with timer expiration flag
+        setTimeout(() => {
+          fetch(`/api/games/${gameId}/meta/vote`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: 'Game',
+              team,
+              action: 'end_turn',
+              timerExpired: true
+            })
+          })
+          .then(response => {
+            if (!response.ok) {
+              console.error('Failed to auto-end turn on timer expiration');
+            } else {
+              console.log('✅ Turn automatically ended due to timer expiration');
+            }
+          })
+          .catch(error => {
+            console.error('Error ending turn on timer expiration:', error);
+          });
+        }, 1000);
+      }
+    }
+  }, [messages, team, gameId, onVote]);
 
   // Handle voting for meta decisions (continue/end turn)
   const handleMetaVote = async (action: 'continue' | 'end_turn' | 'discuss_more', team: string) => {
@@ -346,6 +677,48 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
     return iconMap[model] || '👤';
   };
 
+  // Add animation logic for new messages
+  const [animatedMessages, setAnimatedMessages] = React.useState<string[]>([]);
+  
+  // When messages change, gradually animate in new ones
+  React.useEffect(() => {
+    if (!validMessages.length) return;
+    
+    // Get message IDs to track which ones are animated
+    const messageIds = validMessages.map(msg => `${msg.timestamp}-${msg.player}`);
+    
+    // Find new messages not yet animated
+    const newMessageIds = messageIds.filter(id => !animatedMessages.includes(id));
+    
+    if (newMessageIds.length > 0) {
+      console.log(`🎬 Animating ${newMessageIds.length} new messages`);
+      
+      // Add one message at a time with a delay
+      let delay = 0;
+      const addNextMessage = (index: number) => {
+        if (index >= newMessageIds.length) return;
+        
+        setTimeout(() => {
+          setAnimatedMessages(prev => [...prev, newMessageIds[index]]);
+          addNextMessage(index + 1);
+        }, 300); // 300ms delay between messages
+      };
+      
+      addNextMessage(0);
+    }
+  }, [validMessages]);
+  
+  // Add a continuous debug output to check message state
+  useEffect(() => {
+    console.log('💬 MESSAGES STATUS CHECK:',
+      validMessages.map(msg => `${msg.player}: ${msg.message?.substring(0, 20)}...`)
+    );
+    
+    if (validMessages.length === 0) {
+      console.log('⚠️ NO MESSAGES TO DISPLAY - Check WebSocket and server state');
+    }
+  }, [validMessages]);
+  
   return (
     <div className="team-discussion" style={{
       maxHeight: '400px',
@@ -353,28 +726,56 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
       padding: '10px',
       border: '1px solid #ccc',
       borderRadius: '4px',
-      backgroundColor: '#fff',
-      outline: '2px solid red'
+      backgroundColor: '#fff'
     }}>
-      {!validMessages.length && <div style={{ color: 'red', padding: '20px' }}>No messages yet</div>}
-      {validMessages.map((msg, index) => {
+      {!normalizedMessages.length && <div style={{ color: 'gray', padding: '20px' }}>No messages yet</div>}
+      <div style={{position: 'sticky', top: 0, backgroundColor: '#f8f9fa', padding: '4px', fontSize: '0.8em', color: '#666', zIndex: 10}}>
+        <div>Message count: {normalizedMessages.length}</div>
+        <div>Debug info:</div>
+        <div>
+          <pre style={{fontSize: '0.6em', maxHeight: '60px', overflow: 'auto'}}>
+            {JSON.stringify(normalizedMessages.map(m => ({
+              player: m.player, 
+              msg: m.message?.substring(0, 20), 
+              sw: m.suggestedWords?.length || 0,
+              vt: m.isVoting
+            })), null, 2)}
+          </pre>
+        </div>
+      </div>
+      {normalizedMessages.map((msg, index) => {
         // Extract team for voting
         const team = msg.team;
         
+        // Get message ID
+        const messageId = `${msg.timestamp}-${msg.player}`;
+        const isAnimated = animatedMessages.includes(messageId);
+        
+        // Get voting count - NEVER skip critical messages with suggestions/voting
+        const hasSuggestions = msg.suggestedWords && msg.suggestedWords.length > 0;
+        const isVotingMessage = msg.isVoting || msg.voteType;
+        
+        // Create a stable key that helps avoid React rendering issues
+        const stableKey = `${msg.timestamp}-${msg.player}-${index}-${hasSuggestions ? 'sugg' : ''}-${isVotingMessage ? 'vote' : ''}`;
+        
         return (
           <div 
-            key={`${msg.timestamp}-${msg.player}-${index}`}
-            className={`message ${msg.team} ${msg.isVoting ? 'voting-message' : ''}`}
+            key={stableKey}
+            className={`message ${msg.team} ${isVotingMessage ? 'voting-message' : ''} ${hasSuggestions ? 'suggestion-message' : ''}`}
             style={{ 
               padding: '8px',
               margin: '4px',
               border: '2px solid',
               borderColor: msg.team === 'red' ? '#ff0000' : '#0000ff',
-              backgroundColor: msg.isVoting ? (msg.team === 'red' ? '#fff8f8' : '#f8f8ff') : '#ffffff',
+              backgroundColor: isVotingMessage ? (msg.team === 'red' ? '#fff8f8' : '#f8f8ff') : 
+                               hasSuggestions ? (msg.team === 'red' ? '#ffeeee' : '#eeeeff') : '#ffffff',
               display: 'flex',
               flexDirection: 'column',
               gap: '4px',
-              boxShadow: msg.isVoting ? '0 0 8px rgba(0,0,0,0.1)' : 'none'
+              boxShadow: isVotingMessage || hasSuggestions ? '0 0 8px rgba(0,0,0,0.1)' : 'none',
+              opacity: isAnimated ? 1 : 0,
+              transform: isAnimated ? 'translateY(0)' : 'translateY(20px)',
+              transition: 'opacity 0.3s ease-in-out, transform 0.3s ease-in-out'
             }}
           >
             <div style={{ fontSize: '0.8em', color: '#666' }}>
@@ -395,7 +796,7 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
             </div>
             
             {/* Only display word suggestions section if there are suggested words */}
-            {msg.suggestedWords && msg.suggestedWords.length > 0 ? (
+            {hasSuggestions && (
               <div style={{
                 marginTop: '8px',
                 padding: '12px',
@@ -436,13 +837,13 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                     const hasVotes = voteData && voteData.votes > 0;
                     
                     return (
-                      <div key={idx} style={{ 
+                      <div key={`word-${word}-${idx}`} style={{ 
                         marginBottom: '10px',
                         padding: '8px',
                         backgroundColor: idx === 0 ? 'rgba(240, 249, 255, 0.7)' : 'transparent',
                         borderRadius: '4px',
                         border: idx === 0 ? '1px solid #cce5ff' : 'none',
-                        boxShadow: hasVotes && voteData.percentage > 50 ? '0 0 5px rgba(76, 175, 80, 0.5)' : 'none'
+                        boxShadow: hasVotes && voteData?.percentage > 50 ? '0 0 5px rgba(76, 175, 80, 0.5)' : 'none'
                       }}>
                         <div style={{
                           display: 'flex',
@@ -509,38 +910,13 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                               </span>
                             )}
                           </div>
+                          {/* No manual vote UI - automatic voting only */}
                           <div style={{
-                            display: 'flex',
-                            gap: '4px',
-                            fontSize: '0.85em'
+                            fontSize: '0.8em',
+                            color: '#558b2f',
+                            padding: '2px 8px',
                           }}>
-                            <button 
-                              onClick={() => handleWordVote(word, team)}
-                              style={{
-                                backgroundColor: '#f1f8e9',
-                                border: '1px solid #c5e1a5',
-                                borderRadius: '4px',
-                                padding: '2px 8px',
-                                cursor: 'pointer',
-                                fontWeight: 'bold',
-                                color: '#558b2f'
-                              }}
-                            >
-                              Vote
-                            </button>
-                            <button 
-                              onClick={() => console.log('Skipped voting for:', word)}
-                              style={{
-                                backgroundColor: '#ffebee',
-                                border: '1px solid #ffcdd2',
-                                borderRadius: '4px',
-                                padding: '2px 8px',
-                                cursor: 'pointer',
-                                color: '#c62828'
-                              }}
-                            >
-                              Skip
-                            </button>
+                            {wordConfidence > 0.7 ? "Auto-voting" : ""}
                           </div>
                         </div>
                       </div>
@@ -548,10 +924,10 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                   })}
                 </div>
               </div>
-            ) : null}
+            )}
             
             {/* Display voting UI if agent is proposing a vote - Among Us style */}
-            {msg.isVoting && (
+            {isVotingMessage && (
               <div style={{
                 marginTop: '12px',
                 padding: '12px',
@@ -665,20 +1041,14 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                         </span>
                       )}
                     </div>
-                    <button 
-                      onClick={() => handleMetaVote(msg.voteType === 'end_turn' ? 'end_turn' : 'continue', team)}
-                      style={{
-                        backgroundColor: '#2e7d32',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        padding: '6px 10px',
-                        fontWeight: 'bold',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Vote
-                    </button>
+                    {/* No manual vote button - automatic voting only */}
+                    <div style={{
+                      fontSize: '0.8em',
+                      color: '#2e7d32',
+                      padding: '2px 8px',
+                    }}>
+                      Auto-voting
+                    </div>
                   </div>
                   
                   {/* Disagree Option */}
@@ -736,20 +1106,14 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                         )}
                       </div>
                     </div>
-                    <button 
-                      onClick={() => handleMetaVote(msg.voteType === 'end_turn' ? 'continue' : 'end_turn', team)}
-                      style={{
-                        backgroundColor: '#c62828',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        padding: '6px 10px',
-                        fontWeight: 'bold',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Vote
-                    </button>
+                    {/* No manual vote button - automatic voting only */}
+                    <div style={{
+                      fontSize: '0.8em',
+                      color: '#c62828',
+                      padding: '2px 8px',
+                    }}>
+                      {/* Empty space to maintain layout */}
+                    </div>
                   </div>
                   
                   {/* Discuss More Option */}
@@ -818,20 +1182,14 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                         )}
                       </div>
                     </div>
-                    <button 
-                      onClick={() => handleMetaVote('discuss_more', team)}
-                      style={{
-                        backgroundColor: '#f57c00',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        padding: '6px 10px',
-                        fontWeight: 'bold',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Vote
-                    </button>
+                    {/* No manual vote button - automatic voting only */}
+                    <div style={{
+                      fontSize: '0.8em',
+                      color: '#f57c00',
+                      padding: '2px 8px',
+                    }}>
+                      {/* Empty space to maintain layout */}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -841,4 +1199,4 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
       })}
     </div>
   );
-} 
+}

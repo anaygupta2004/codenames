@@ -32,6 +32,9 @@ export function GameBoard({ game, team, onGuess, onVote, ...props }: GameBoardPr
       onGuess(word);
       // Clear selection
       setSelectedWord(null);
+    } else if (onVote && team) {
+      // If no consensus yet, vote for the word
+      onVote(word, team);
     }
   };
   
@@ -121,7 +124,7 @@ export function GameBoard({ game, team, onGuess, onVote, ...props }: GameBoardPr
     return modelNames[player] || player;
   };
 
-  // Get vote indicator for a word - shows if there's voting progress
+  // Enhanced vote indicator for a word - shows if there's voting progress and triggers auto-guess
   const getVoteIndicator = (word: string) => {
     if (!wordVotes[word]) return null;
     
@@ -139,18 +142,42 @@ export function GameBoard({ game, team, onGuess, onVote, ...props }: GameBoardPr
     const totalVoters = Math.max(1, aiPlayers.length + (team ? 1 : 0));
     const votePercentage = Math.round((voteCount / totalVoters) * 100);
     
-    // Color based on vote percentage
-    const bgColor = votePercentage > 70 ? "bg-green-100 text-green-800 border border-green-300" : 
-                   votePercentage > 40 ? "bg-yellow-100 text-yellow-800 border border-yellow-300" : 
+    // Enhanced auto-guess threshold: lower to 30% and also consider confidence
+    const isHighConfidence = avgConfidence >= 0.75;
+    const meetsTriggerThreshold = votePercentage >= 30 || (isHighConfidence && voteCount >= 2);
+    
+    // Color based on vote percentage and confidence
+    const bgColor = meetsTriggerThreshold ? "bg-green-100 text-green-800 border border-green-300" : 
+                   votePercentage > 20 ? "bg-yellow-100 text-yellow-800 border border-yellow-300" : 
                    "bg-gray-100 text-gray-800 border border-gray-300";
     
-    // Show a more prominent indicator when threshold is reached
-    const showThreshold = votePercentage > 50;
+    // Auto-trigger guess after a short delay when threshold is reached
+    useEffect(() => {
+      // Only auto-guess for the team whose turn it is
+      const isCurrentTeamTurn = 
+        (team === "red" && game.currentTurn === "red_turn") || 
+        (team === "blue" && game.currentTurn === "blue_turn");
+      
+      if (meetsTriggerThreshold && isCurrentTeamTurn && onGuess) {
+        const autoGuessTimeout = setTimeout(() => {
+          console.log(`🎯 Auto-triggering guess for ${word} with ${voteCount} votes (${votePercentage}%) and confidence ${avgConfidence}`);
+          onGuess(word);
+        }, 2000); // 2 second delay before auto-guessing
+        
+        return () => clearTimeout(autoGuessTimeout);
+      }
+    }, [meetsTriggerThreshold, voteCount, votePercentage]);
     
+    // Enhanced indicator that pulses more prominently
     return (
-      <div className={`absolute top-0 right-0 px-2 py-1 text-xs font-bold ${showThreshold ? "rounded-md -mt-2 -mr-2 shadow-md animate-pulse" : "rounded-bl-md"} ${bgColor}`}>
+      <div className={`absolute top-0 right-0 px-2 py-1 text-xs font-bold 
+        ${meetsTriggerThreshold ? "rounded-md -mt-2 -mr-2 shadow-md animate-pulse bg-green-500 text-white" : "rounded-bl-md " + bgColor}`}>
         {voteCount} votes ({votePercentage}%)
-        {showThreshold && <span className="block text-[10px] mt-0.5">✓ Threshold reached!</span>}
+        {meetsTriggerThreshold && (
+          <span className="block text-[10px] mt-0.5">
+            {isHighConfidence ? "✓ High confidence!" : "✓ Enough votes!"}
+          </span>
+        )}
       </div>
     );
   };
@@ -195,33 +222,7 @@ export function GameBoard({ game, team, onGuess, onVote, ...props }: GameBoardPr
               {word}
               {!game.revealedCards?.includes(word) && getVoteIndicator(word)}
               
-              {/* Voting UI for the selected word */}
-              {selectedWord === word && !game.revealedCards?.includes(word) && (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white shadow-lg rounded-md p-3 z-10">
-                  <div className="text-sm font-medium mb-2">Vote for this word?</div>
-                  <div className="flex justify-between gap-2">
-                    <button 
-                      className="flex-1 bg-green-500 text-white py-1 px-2 rounded hover:bg-green-600"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (onVote && team) onVote(word, team);
-                        setSelectedWord(null);
-                      }}
-                    >
-                      Yes
-                    </button>
-                    <button 
-                      className="flex-1 bg-red-500 text-white py-1 px-2 rounded hover:bg-red-600"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedWord(null);
-                      }}
-                    >
-                      No
-                    </button>
-                  </div>
-                </div>
-              )}
+              {/* No manual voting UI - automatic voting only */}
             </Card>
           ))}
         </div>
