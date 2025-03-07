@@ -1,5 +1,6 @@
+import React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -11,6 +12,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { AlertCircle, CheckCircle2, XCircle, Clock, Timer, Bot } from "lucide-react";
 import { SiOpenai, SiAnthropic, SiGooglegemini } from "react-icons/si";
 import { storage } from "@/lib/storage";
+import { motion } from "framer-motion";
 
 // Update AI model display info with correct icon components
 const AI_MODEL_INFO = {
@@ -36,6 +38,117 @@ const getModelDisplayName = (model: AIModel): string => {
   return AI_MODEL_INFO[model]?.name || model;
 }
 
+// Add this new component for the poll UI
+const WordPoll = ({ 
+  word, 
+  votes, 
+  teamColor = "red",
+  onVote 
+}: { 
+  word: string; 
+  votes: { yes: string[]; no: string[] }; 
+  teamColor: "red" | "blue";
+  onVote?: (word: string, vote: boolean) => void;
+}) => {
+  // Calculate percentages for the progress bars
+  const totalVotes = votes.yes.length + votes.no.length;
+  const yesPercentage = totalVotes === 0 ? 0 : Math.round((votes.yes.length / totalVotes) * 100);
+  const noPercentage = totalVotes === 0 ? 0 : Math.round((votes.no.length / totalVotes) * 100);
+  
+  return (
+    <Card className={`w-full mb-4 shadow-md border border-${teamColor}-200 overflow-hidden`}>
+      <CardHeader className={`bg-${teamColor}-50 pb-2`}>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg font-medium">Team Vote</CardTitle>
+          <span className="text-sm text-muted-foreground">{totalVotes} votes</span>
+        </div>
+        <CardDescription>Should we guess this word?</CardDescription>
+      </CardHeader>
+      <CardContent className="pt-4">
+        <div className="text-xl font-bold text-center mb-5 py-2 px-4 bg-white rounded-md border inline-block mx-auto">
+          {word}
+        </div>
+        
+        <div className="grid gap-3 mt-2">
+          {/* Yes option */}
+          <div className="relative">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${yesPercentage}%` }}
+              transition={{ duration: 0.8, ease: "easeOut" }}
+              className={`absolute top-0 left-0 h-full bg-green-500 opacity-20 rounded-md z-0`}
+            />
+            <div className="relative z-10 p-3 rounded-md border border-gray-200 flex justify-between items-center">
+              <div className="flex items-center">
+                <span className="font-medium text-green-700 mr-2">Yes</span>
+                <div className="flex -space-x-2">
+                  {votes.yes.map((modelId, i) => {
+                    const ModelIcon = AI_MODEL_INFO[modelId as AIModel]?.Icon || Bot;
+                    return (
+                      <motion.div 
+                        key={`yes-${modelId}-${i}`}
+                        initial={{ scale: 0, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: i * 0.1, duration: 0.3 }}
+                        className="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center border-2 border-white"
+                        title={getModelDisplayName(modelId as AIModel)}
+                      >
+                        {modelId === "human" ? (
+                          <span className="text-xs">👤</span>
+                        ) : (
+                          <ModelIcon className="w-4 h-4" />
+                        )}
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </div>
+              <span className="font-semibold">{yesPercentage}%</span>
+            </div>
+          </div>
+          
+          {/* No option */}
+          <div className="relative">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${noPercentage}%` }}
+              transition={{ duration: 0.8, ease: "easeOut" }}
+              className={`absolute top-0 left-0 h-full bg-red-500 opacity-20 rounded-md z-0`}
+            />
+            <div className="relative z-10 p-3 rounded-md border border-gray-200 flex justify-between items-center">
+              <div className="flex items-center">
+                <span className="font-medium text-red-700 mr-2">No</span>
+                <div className="flex -space-x-2">
+                  {votes.no.map((modelId, i) => {
+                    const ModelIcon = AI_MODEL_INFO[modelId as AIModel]?.Icon || Bot;
+                    return (
+                      <motion.div 
+                        key={`no-${modelId}-${i}`}
+                        initial={{ scale: 0, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: i * 0.1, duration: 0.3 }}
+                        className="w-7 h-7 rounded-full bg-red-100 flex items-center justify-center border-2 border-white"
+                        title={getModelDisplayName(modelId as AIModel)}
+                      >
+                        {modelId === "human" ? (
+                          <span className="text-xs">👤</span>
+                        ) : (
+                          <ModelIcon className="w-4 h-4" />
+                        )}
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </div>
+              <span className="font-semibold">{noPercentage}%</span>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
 export default function GamePage() {
   const { id } = useParams();
   const { toast } = useToast();
@@ -47,6 +160,7 @@ export default function GamePage() {
   const aiDiscussionTriggered = useRef(false);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
   
   // State hooks - must be in the same order every render
   const [isSpymasterView, setIsSpymasterView] = useState(false);
@@ -58,6 +172,20 @@ export default function GamePage() {
   const [votingInProgress, setVotingInProgress] = useState(false);
   const [lastClue, setLastClue] = useState<{ word: string; number: number } | null>(null);
   const [discussionInput, setDiscussionInput] = useState("");
+  const [isVotingActive, setIsVotingActive] = useState(false);
+  const [localDiscussion, setLocalDiscussion] = useState<TeamDiscussionEntry[]>([]);
+  const [displayedPolls, setDisplayedPolls] = useState(new Set<string>());
+  
+  // Track models that have voted on words and meta actions to prevent duplicates
+  const [votedOnWords, setVotedOnWords] = useState<Record<string, Set<string>>>({});
+  const [votedOnMeta, setVotedOnMeta] = useState<Record<string, Set<string>>>({});
+  
+  // Current state of votes for decision making
+  const [wordVoteCounts, setWordVoteCounts] = useState<Record<string, { 
+    count: number, 
+    threshold: number,
+    voters: string[] 
+  }>>({});
 
   // Query hook
   const { data: game, isLoading, isError } = useQuery<Game>({
@@ -92,24 +220,80 @@ export default function GamePage() {
           console.log('Received WebSocket message:', data);
 
           if (data.type === 'discussion') {
-            // Immediately update local state
-              setGameLog(prev => [...prev, {
-                team: data.team,
-                action: data.content,
-                result: "pending",
+            // Create the new discussion entry with all required fields
+            const newEntry = {
+              team: data.team,
               player: data.player,
-              timestamp: data.timestamp
-            }]);
-
-            // Force refresh of game data
-            queryClient.invalidateQueries({ 
-              queryKey: [`/api/games/${id}`],
-              refetchType: 'active',
-              exact: true
+              message: data.content || data.message || '',
+              timestamp: data.timestamp || Date.now(),
+              // Add required fields with default values
+              confidences: data.confidences || [data.confidence || 0.5],
+              suggestedWords: data.suggestedWords || [],
+              isVoting: !!data.isVoting,
+              voteType: data.voteType
+            };
+            
+            // Update local state immediately for instant UI update
+            setLocalDiscussion(prev => [...prev, newEntry]);
+            
+            // Also update React Query cache
+            queryClient.setQueryData([`/api/games/${id}`], (oldData: Game | undefined) => {
+              if (!oldData) return oldData;
+              return {
+                ...oldData,
+                teamDiscussion: [...(oldData.teamDiscussion || []), newEntry]
+              };
             });
+            
+            // Trigger a refetch to sync with server
+            queryClient.invalidateQueries({ 
+              queryKey: [`/api/games/${id}`]
+            });
+            
+            // If the message has suggested words with high confidence, track them for potential voting
+            if (newEntry.suggestedWords?.length > 0 && newEntry.confidences?.[0] >= 0.6) {
+              newEntry.suggestedWords.forEach((word, index) => {
+                // Get the confidence for this word
+                const confidence = newEntry.confidences && index < newEntry.confidences.length 
+                  ? newEntry.confidences[index] 
+                  : 0.5;
+                
+                // Only track high confidence suggestions
+                if (confidence >= 0.6) {
+                  setWordVoteCounts(prev => {
+                    // Initialize if this word isn't already tracked
+                    if (!prev[word]) {
+                      return {
+                        ...prev,
+                        [word]: { 
+                          count: 1, 
+                          threshold: 2, // Need at least 2 votes to guess
+                          voters: [newEntry.player] 
+                        }
+                      };
+                    }
+                    
+                    // If this player hasn't already voted for this word, count their vote
+                    if (!prev[word].voters.includes(newEntry.player)) {
+                      return {
+                        ...prev,
+                        [word]: {
+                          count: prev[word].count + 1,
+                          threshold: prev[word].threshold,
+                          voters: [...prev[word].voters, newEntry.player]
+                        }
+                      };
+                    }
+                    
+                    return prev;
+                  });
+                }
+              });
+            }
           }
 
           if (data.type === 'guess') {
+            console.log(`🎲 Received guess event: ${data.word} - ${data.result}`);
             const guessResult = data.result; // "correct", "wrong", or "assassin"
             
             // Immediately update game log
@@ -121,6 +305,36 @@ export default function GamePage() {
               player: data.player,
               timestamp: data.timestamp
             }]);
+            
+            // Add a discussion message about the guess
+            const newDiscussionEntry = {
+              team: data.team,
+              player: 'Game',
+              message: `${data.player || 'Someone'} guessed: ${data.word} (${guessResult})`,
+              confidences: [1],
+              suggestedWords: [],
+              timestamp: data.timestamp || Date.now()
+            };
+            
+            // Update local discussion
+            setLocalDiscussion(prev => [...prev, newDiscussionEntry]);
+            
+            // Update React Query cache with revealed card and discussion entry
+            queryClient.setQueryData([`/api/games/${id}`], (oldData: Game | undefined) => {
+              if (!oldData) return oldData;
+              
+              // Add the revealed card
+              const updatedRevealedCards = [...(oldData.revealedCards || [])];
+              if (!updatedRevealedCards.includes(data.word)) {
+                updatedRevealedCards.push(data.word);
+              }
+              
+              return {
+                ...oldData,
+                revealedCards: updatedRevealedCards,
+                teamDiscussion: [...(oldData.teamDiscussion || []), newDiscussionEntry]
+              };
+            });
 
             // Force immediate game data refresh
             queryClient.invalidateQueries({ 
@@ -134,6 +348,19 @@ export default function GamePage() {
               setLastClue(null);
               setIsDiscussing(false);
               aiTurnInProgress.current = false;
+              
+              // Add turn change notification
+              const nextTeam = data.team === 'red' ? 'blue' : 'red';
+              const turnChangeEntry = {
+                team: data.team,
+                player: 'Game',
+                message: `Turn ended. ${nextTeam.toUpperCase()} team's turn now.`,
+                confidences: [1],
+                suggestedWords: [],
+                timestamp: (data.timestamp || Date.now()) + 1
+              };
+              
+              setLocalDiscussion(prev => [...prev, turnChangeEntry]);
             }
           }
 
@@ -144,8 +371,56 @@ export default function GamePage() {
               exact: true
             });
           }
+          
+          if (data.type === 'turn_change') {
+            console.log(`🔄 Turn change event: ${data.from} → ${data.to}, reason: ${data.reason || 'manual'}`);
+            
+            // Create a message for the turn change
+            const message = `Turn ended${data.reason ? ` (${data.reason})` : ''}. ${data.to.toUpperCase()} team's turn now.`;
+            
+            // Add to local discussion state for immediate display
+            const turnChangeEntry = {
+              team: data.from,
+              player: 'Game',
+              message: message,
+              confidences: [1],
+              suggestedWords: [],
+              timestamp: data.timestamp || Date.now()
+            };
+            
+            // Update local state
+            setLocalDiscussion(prev => [...prev, turnChangeEntry]);
+            
+            // Also update game state in UI cache
+            queryClient.setQueryData([`/api/games/${id}`], (oldData: Game | undefined) => {
+              if (!oldData) return oldData;
+              return {
+                ...oldData,
+                currentTurn: data.to === 'red' ? 'red_turn' : 'blue_turn',
+                teamDiscussion: [...(oldData.teamDiscussion || []), turnChangeEntry]
+              };
+            });
+            
+            // Force refresh game data
+            queryClient.invalidateQueries({ 
+              queryKey: [`/api/games/${id}`],
+              refetchType: 'active'
+            });
+            
+            // Reset state for new turn
+            setLastClue(null);
+            setIsDiscussing(false);
+            aiTurnInProgress.current = false;
+            processedGameState.current = false;
+            
+            // Clear all voting state for the new turn
+            setVotedOnWords({});
+            setVotedOnMeta({});
+            setWordVoteCounts({});
+            console.log("Cleared voting state for new turn");
+          }
         } catch (error) {
-          console.error('Error processing WebSocket message:', error);
+          console.error('WebSocket message error:', error);
         }
       };
 
@@ -171,7 +446,7 @@ export default function GamePage() {
         clearTimeout(reconnectTimeoutRef.current);
       }
     };
-  }, [id]);
+  }, [id, game]);
 
   // Game state processor effect
   useEffect(() => {
@@ -221,26 +496,76 @@ export default function GamePage() {
       aiDiscussionTriggered.current = false;
     }
   }, [lastClue]);
+  
+  // Clear team discussion when turn changes - FIX: More robust implementation
+  const prevTurnRef = useRef(game?.currentTurn);
+  
+  useEffect(() => {
+    if (!game) return;
+    
+    // Only clear and reset discussion if the turn has actually changed
+    if (prevTurnRef.current !== game.currentTurn) {
+      console.log(`🔄 Turn changed from ${prevTurnRef.current} to ${game.currentTurn} - Clearing team discussion`);
+      
+      // Update the ref to current turn
+      prevTurnRef.current = game.currentTurn;
+      
+      // When turn changes, clear local discussion state
+      setLocalDiscussion([]);
+      
+      // Add a fresh discussion start message with a clear separator
+      const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+      const newTurnMessage = {
+        team: currentTeam,
+        player: 'Game',
+        message: `=== ${currentTeam.toUpperCase()} TEAM'S TURN - New Discussion Begins ===`,
+        timestamp: Date.now(),
+        confidences: [1],
+        suggestedWords: []
+      };
+      
+      setLocalDiscussion([newTurnMessage]);
+      
+      // Reset all voting state for the new turn
+      setVotedOnWords({});
+      setVotedOnMeta({});
+      setWordVoteCounts({});
+      setDisplayedPolls(new Set<string>());
+      
+      // Also broadcast this as a major state change via WebSocket
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'discussion',
+          team: currentTeam,
+          player: 'Game',
+          content: `=== ${currentTeam.toUpperCase()} TEAM'S TURN - New Discussion Begins ===`,
+          message: `=== ${currentTeam.toUpperCase()} TEAM'S TURN - New Discussion Begins ===`,
+          timestamp: Date.now(),
+          isTurnChange: true
+        }));
+      }
+      
+      // Clear server-side discussion for the previous team
+      const previousTeam = prevTurnRef.current === "red_turn" ? "red" : "blue";
+      if (previousTeam && socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'clear_discussion',
+          team: previousTeam,
+          gameId: Number(id),
+          timestamp: Date.now()
+        }));
+      }
+    }
+  }, [game?.currentTurn, id]);
 
   // All mutation hooks - define all of them before conditional returns
   const switchTurns = useMutation({
     mutationFn: async () => {
       if (!game) return null;
       
-      const nextTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
-      const res = await apiRequest("PATCH", `/api/games/${id}`, {
-        currentTurn: nextTurn
-      });
-      
-      return res.json();
-    },
-    onSuccess: () => {
-      setLastClue(null);
-      setIsDiscussing(false);
-      aiTurnInProgress.current = false;
-      aiDiscussionTriggered.current = false;
-      processedGameState.current = false;
-      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+      // Instead of direct API call, use our consistent shared handler
+      handleTurnChange('manual');
+      return { success: true };
     }
   });
 
@@ -340,44 +665,224 @@ export default function GamePage() {
     }
   });
 
-  // 1. Fix the timer expiration effect to forcefully change turns
+  // Double-reinforced timer expiration handler for mandatory turn changes
   useEffect(() => {
     // Only execute when the timer reaches zero and there's an active game
     if (!game || turnTimer !== 0 || game.gameState?.includes("win")) return;
     
-    console.log("TIMER EXPIRED - Forcing turn change");
+    console.log("⏰⏰ TIMER REACHED ZERO - FORCEFULLY changing turn ⏰⏰");
+    
+    // Determine current and next team information
     const isRedTurn = game.currentTurn === "red_turn";
     const nextTurn = isRedTurn ? "blue_turn" : "red_turn";
+    const currentTeam = isRedTurn ? "red" : "blue";
+    const nextTeam = isRedTurn ? "blue" : "red";
     
-    // Make a dedicated API call with clear parameters
-    apiRequest("PATCH", `/api/games/${id}`, {
-      currentTurn: nextTurn,
-      _forceTimerSwitch: true, // Signal this is from timer expiration
-      _timestamp: Date.now()
+    // MAKE THIS CRITICAL - Log multiple obvious console messages to track execution
+    console.log(`🚨 TIMER EXPIRED - ${currentTeam.toUpperCase()} → ${nextTeam.toUpperCase()}`);
+    console.log(`🚨 SENDING MULTIPLE REDUNDANT TURN CHANGE REQUESTS FOR RELIABILITY`);
+    
+    // 1. Send meta vote with timer expiration flag FIRST - most reliable way
+    const metaVotePromise = fetch(`/api/games/${id}/meta/vote`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'Game',
+        team: currentTeam,
+        action: 'end_turn',
+        timerExpired: true, // CRITICAL - explicitly mark as timer expiration
+        highPriority: true
+      })
     })
     .then(res => res.json())
-    .then(data => {
-      // Log success or failure
-      if (data.error) {
-        console.error("Turn switch failed:", data.error);
-      } else {
-        console.log("Turn switched successfully via timer");
+    .catch(err => console.error("Error sending timer-based meta vote:", err));
+    
+    // 2. ALSO make a parallel direct PATCH request to ensure the turn absolutely changes
+    // This is redundant but ensures turn switching even if one method fails
+    const directPatchPromise = apiRequest("PATCH", `/api/games/${id}`, {
+      currentTurn: nextTurn,
+      currentTurnStartTime: new Date(), // CRITICAL: Reset timer
+      _forceTimerSwitch: true, // Signal this is from timer expiration
+      _timestamp: Date.now(),
+      forceTimerExpiration: true // Additional signal
+    })
+    .then(res => res.json())
+    .catch(err => console.error("Error in direct PATCH for timer expiration:", err));
+    
+    // 3. ALSO send a WebSocket message to everyone about the turn change
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'turn_change',
+        from: currentTeam,
+        to: nextTeam,
+        reason: 'time_expired',
+        gameId: Number(id),
+        timestamp: Date.now(),
+        forced: true,
+        highPriority: true
+      }));
+      
+      // Send a discussion message as well
+      socketRef.current.send(JSON.stringify({
+        type: 'discussion',
+        gameId: Number(id),
+        team: currentTeam,
+        player: 'Game',
+        content: `⏰ TIME EXPIRED! Turn forcibly switched to ${nextTeam.toUpperCase()} team.`,
+        timestamp: Date.now(),
+        highPriority: true
+      }));
+    }
+    
+    // 4. After all promises complete, ensure client state is updated correctly
+    Promise.all([metaVotePromise, directPatchPromise])
+      .then(() => {
+        console.log("✅ Multiple turn change mechanisms executed - verifying state");
         
-        // Reset all relevant state
+        // Reset all local state for clean turn transition
         setLastClue(null);
         setIsDiscussing(false);
         setTurnTimer(60); // Reset timer for next turn
         aiTurnInProgress.current = false;
         processedGameState.current = false;
+        setVotedOnWords({});
+        setVotedOnMeta({});
+        setWordVoteCounts({});
         
-        // Explicitly invalidate to refresh UI
-        queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
-      }
-    })
-    .catch(err => console.error("Error in timer-based turn switch:", err));
+        // CRITICAL: Force React Query to refetch and update UI state
+        queryClient.invalidateQueries({ 
+          queryKey: [`/api/games/${id}`],
+          refetchType: 'active'
+        });
+      })
+      .catch(err => console.error("Error in timer-based turn change processing:", err));
+    
+    // 5. Set a fallback timeout to check if turn actually changed
+    setTimeout(() => {
+      // Re-fetch game data to check if turn was actually changed
+      fetch(`/api/games/${id}`)
+        .then(res => res.json())
+        .then(currentGame => {
+          if (currentGame.currentTurn === game.currentTurn) {
+            // If turn hasn't changed, try ONE MORE absolute last-resort method
+            console.error("🚨 EMERGENCY: Turn did not change after timer expiration, trying final method");
+            
+            // LAST RESORT: Direct database update with PATCH
+            apiRequest("PATCH", `/api/games/${id}`, {
+              currentTurn: nextTurn,
+              currentTurnStartTime: new Date(),
+              _EMERGENCY_TURN_CHANGE: true
+            }).then(() => {
+              // Hard reset of all local state to ensure clean UI
+              setLocalDiscussion([]);
+              setVotedOnWords({});
+              setVotedOnMeta({});
+              setWordVoteCounts({});
+              setDisplayedPolls(new Set<string>());
+              
+              // Force refetch after this emergency action
+              queryClient.invalidateQueries({ 
+                queryKey: [`/api/games/${id}`],
+                refetchType: 'active'
+              });
+            });
+          }
+        })
+        .catch(err => console.error("Error in fallback turn verification:", err));
+    }, 2000); // Check after 2 seconds
+    
   }, [turnTimer, game?.id, game?.currentTurn, game?.gameState]);
 
-  // 2. Make the makeGuess function more robust
+  // Shared function to handle turn changes consistently
+  const handleTurnChange = (reason: string) => {
+    if (!game) return;
+    
+    // Use the centralized forceTurnChange function to handle all turn switching
+    // This will be passed down from the timer useEffect
+    console.log(`🔄 Triggering turn change: ${reason}`);
+    
+    // Get the current turn information
+    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    const nextTeam = game.currentTurn === "red_turn" ? "blue" : "red";
+    const nextTurnState = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+    
+    // THREE PARALLEL METHODS to ensure the turn absolutely changes:
+    
+    // METHOD 1: Meta vote with high priority flag (most reliable way)
+    const metaVotePromise = fetch(`/api/games/${game.id}/meta/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'Game',
+        team: currentTeam,
+        action: 'end_turn',
+        highPriority: true,
+        timestamp: Date.now()
+      })
+    })
+    .then(res => res.json())
+    .catch(err => {
+      console.error('Meta vote method failed, trying backup methods:', err);
+      return { error: true };
+    });
+    
+    // METHOD 2: Direct PATCH to game state (backup method)
+    const directPatchPromise = fetch(`/api/games/${game.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        currentTurn: nextTurnState,
+        currentTurnStartTime: new Date(),
+        _timestamp: Date.now()
+      })
+    })
+    .then(res => res.json())
+    .catch(err => {
+      console.error('Direct PATCH method failed:', err);
+      return { error: true };
+    });
+    
+    // METHOD 3: WebSocket broadcast (notification method)
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'turn_change',
+        from: currentTeam,
+        to: nextTeam,
+        reason: reason,
+        gameId: Number(game.id),
+        timestamp: Date.now(),
+        forced: true,
+        highPriority: true
+      }));
+    }
+    
+    // Process all turn change attempts and reset client state
+    Promise.all([metaVotePromise, directPatchPromise])
+      .then(() => {
+        console.log('✅ All turn change mechanisms executed for: ' + reason);
+        
+        // RESET ALL CLIENT STATE for a clean transition
+        setLastClue(null);
+        setIsDiscussing(false);
+        setTurnTimer(60); // Reset timer explicitly for the next turn
+        aiTurnInProgress.current = false;
+        processedGameState.current = false;
+        aiDiscussionTriggered.current = false;
+        setVotedOnWords({});
+        setVotedOnMeta({});
+        setWordVoteCounts({});
+        
+        // Force refresh all game data
+        queryClient.invalidateQueries({ 
+          queryKey: [`/api/games/${game.id}`],
+          refetchType: 'active'
+        });
+      });
+  };
+
+  // Enhanced makeGuess function with immediate turn changes and automatic guessing
   const makeGuess = useMutation({
     mutationFn: async (word: string) => {
       if (!game) return null;
@@ -392,6 +897,8 @@ export default function GamePage() {
         return null;
       }
 
+      console.log(`🎯 Making guess for word: ${word}`);
+      
       // First, reveal the card
       const res = await apiRequest("PATCH", `/api/games/${id}`, {
         revealedCards: [...(game?.revealedCards || []), word],
@@ -402,6 +909,7 @@ export default function GamePage() {
       
       // Determine the type of word guessed
       const isRedTurn = game.currentTurn === "red_turn";
+      const currentTeam = isRedTurn ? "red" : "blue"; 
       const isAssassin = word === game.assassin;
       const isRedTeamWord = game.redTeam.includes(word);
       const isBlueTeamWord = game.blueTeam.includes(word);
@@ -409,20 +917,35 @@ export default function GamePage() {
       const isOpponentTeamWord = isRedTurn ? isBlueTeamWord : isRedTeamWord;
       const isNeutralWord = !isRedTeamWord && !isBlueTeamWord && !isAssassin;
       
-      // Log for debugging
-      console.log(`GUESS: ${word} | Team: ${isRedTurn ? 'Red' : 'Blue'} | Type: ${
-        isCorrectTeamWord ? 'Correct' : 
-        isOpponentTeamWord ? 'Opponent' : 
-        isAssassin ? 'Assassin' : 'Neutral'
-      }`);
-      
-      // Add to game log
+      // Result to send to the server and display
       const result = isCorrectTeamWord ? "correct" : 
                     isAssassin ? "assassin" : 
-                    isOpponentTeamWord ? "wrong" : "pending";
+                    "wrong"; // Both neutral and opponent words count as "wrong"
       
+      // Log the guess for UI feedback
+      console.log(`🎲 GUESS: ${word} | Team: ${currentTeam} | Result: ${result}`);
+      
+      // Create a discussion message about the guess to ensure it appears in chat
+      const guessMessage = {
+        type: 'discussion',
+        content: `Guessed: ${word} (${result})`,
+        message: `Guessed: ${word} (${result})`,
+        team: currentTeam,
+        player: 'Game',
+        timestamp: Date.now()
+      };
+      
+      // Send the discussion message via WebSocket
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          ...guessMessage,
+          gameId: Number(id)
+        }));
+      }
+      
+      // Also add to game log for the UI sidebar
       setGameLog(prev => [...prev, {
-        team: isRedTurn ? "red" : "blue",
+        team: currentTeam,
         action: `Guessed: ${word}`,
         result,
         word,
@@ -430,66 +953,518 @@ export default function GamePage() {
         timestamp: Date.now()
       }]);
       
-      // Switch turns if needed (opponent's word, neutral, or assassin)
-      if (isOpponentTeamWord || isNeutralWord || isAssassin) {
-        console.log(`FORCING TURN SWITCH: ${
-          isAssassin ? 'Assassin' : isOpponentTeamWord ? 'Opponent word' : 'Neutral word'
-        } guessed`);
-        
-        const nextTurn = isRedTurn ? "blue_turn" : "red_turn";
-        
-        // Second API call specifically for switching turns
-        try {
-          const switchResponse = await fetch(`/api/games/${id}`, {
-            method: 'PATCH',
+      // Use manual WebSocket for broadcasting since we don't have a broadcast endpoint
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'guess',
+          gameId: Number(id),
+          team: currentTeam,
+          word,
+          result,
+          timestamp: Date.now()
+        }));
+      }
+      
+      // ALWAYS create a meta-vote decision after EVERY guess
+      if (result === "correct") {
+        setTimeout(() => {
+          // Add a meta decision entry with explicit voting flags
+          const metaDecisionMsg = {
+            team: currentTeam,
+            player: 'Game',
+            message: "Team must decide: continue guessing or end turn?",
+            timestamp: Date.now(),
+            isVoting: true, // CRITICAL: Mark as voting message
+            voteType: 'meta_decision',
+            metaOptions: ['continue', 'end_turn']
+          };
+          
+          // Add to local discussion
+          setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
+          
+          // Send via WebSocket for real-time updates
+          if (socketRef.current?.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              ...metaDecisionMsg,
+              type: 'discussion',
+              gameId: Number(id)
+            }));
+          }
+          
+          // Request AI models to vote on continue/end turn
+          fetch(`/api/games/${id}/meta/discuss`, {
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              currentTurn: nextTurn,
-              _forceGuessSwitch: true,
-              wordGuessed: word,
-              wordType: isAssassin ? 'assassin' : isOpponentTeamWord ? 'opponent' : 'neutral',
-              _timestamp: Date.now()
+              message: "Should we continue guessing or end turn?",
+              team: currentTeam,
+              triggerVoting: true
             })
+          }).catch(err => console.error("Error triggering AI meta vote:", err));
+          
+          // Flag for UI to show voting
+          setIsVotingActive(true);
+        }, 500);
+      }
+      
+      // STRICT TURN CHANGE: Immediately change turns for wrong guesses, opponent's words, or assassin
+      if (!isCorrectTeamWord || isNeutralWord || isOpponentTeamWord || isAssassin) {
+        console.log(`🔄 IMMEDIATE turn switch after ${result} guess`);
+        
+        // Special handling for assassin (set game state)
+        if (isAssassin) {
+          // Make special API call just for setting the win state
+          apiRequest("PATCH", `/api/games/${id}`, {
+            gameState: isRedTurn ? "blue_win" : "red_win"
           });
-          
-          const switchData = await switchResponse.json();
-          console.log("Turn switch response:", switchData);
-          
-          // Reset state for new turn
-          setLastClue(null);
-          setIsDiscussing(false);
-          setTurnTimer(60); // Reset timer for next turn
-          aiTurnInProgress.current = false;
-          processedGameState.current = false;
-        } catch (err) {
-          console.error("Error switching turns:", err);
         }
+        
+        // Get the specific reason for turn change
+        let turnChangeReason = 'wrong_guess';
+        if (isAssassin) {
+          turnChangeReason = 'assassin';
+        } else if (isOpponentTeamWord) {
+          turnChangeReason = 'opponent_word';
+        } else if (isNeutralWord) {
+          turnChangeReason = 'neutral_word';
+        }
+        
+        // Use shared turn change handler
+        handleTurnChange(turnChangeReason);
+      } else {
+        // SIMPLIFIED: For correct guesses, show meta-voting without buttons, similar to word voting
+        console.log("✅ Correct guess! Initiating meta decision flow");
+        
+        // Create an informational message about the correct guess
+        const successMsg = {
+          team: currentTeam,
+          player: 'Game',
+          message: `✓ Correct guess! Your team gets a point.`,
+          timestamp: Date.now()
+        };
+        
+        // Send via WebSocket and update local state
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            ...successMsg,
+            type: 'discussion',
+            gameId: Number(id)
+          }));
+        }
+        
+        setLocalDiscussion(prev => [...prev, successMsg]);
+        
+        // Reset word votes
+        setVotedOnWords({});
+        setWordVoteCounts({});
+        
+        // IMMEDIATELY check for high-confidence words to guess next
+        // Run directly in aggressive auto-guesser mode to find candidate words
+        const teamDiscussion = game.teamDiscussion?.filter(msg => msg.team === currentTeam) || [];
+        
+        // Build word suggestion map
+        const wordSuggestions = new Map();
+        
+        teamDiscussion.forEach(msg => {
+          if (!msg.suggestedWords || msg.suggestedWords.length === 0) return;
+          
+          msg.suggestedWords.forEach((word, idx) => {
+            // Skip meta options and revealed cards
+            if (word === "CONTINUE" || word === "END TURN" || game.revealedCards.includes(word)) {
+              // If it's a revealed card being suggested, tell the AI it was already guessed
+              if (game.revealedCards.includes(word)) {
+                // Add message only if this is a recent suggestion (within last few messages)
+                const isRecentSuggestion = teamDiscussion.indexOf(msg) >= teamDiscussion.length - 3;
+                if (isRecentSuggestion) {
+                  const alreadyGuessedMsg = {
+                    team: currentTeam,
+                    player: 'Game',
+                    message: `"${word}" was already correctly guessed. Try a different word.`,
+                    timestamp: Date.now()
+                  };
+                  
+                  // Add to discussion for immediate feedback
+                  setLocalDiscussion(prev => [...prev, alreadyGuessedMsg]);
+                  
+                  // Broadcast to all clients
+                  if (socketRef.current?.readyState === WebSocket.OPEN) {
+                    socketRef.current.send(JSON.stringify({
+                      ...alreadyGuessedMsg,
+                      type: 'discussion',
+                      gameId: Number(id)
+                    }));
+                  }
+                }
+              }
+              return;
+            }
+            
+            // Get confidence for this word
+            const confidence = msg.confidences && idx < msg.confidences.length 
+              ? msg.confidences[idx] 
+              : 0.5;
+            
+            // Initialize if needed
+            if (!wordSuggestions.has(word)) {
+              wordSuggestions.set(word, {
+                count: 0,
+                totalConfidence: 0,
+                sources: new Set(),
+                maxConfidence: 0
+              });
+            }
+            
+            // Update stats
+            const stats = wordSuggestions.get(word);
+            stats.count++;
+            stats.totalConfidence += confidence;
+            stats.sources.add(msg.player);
+            
+            // Track highest confidence
+            if (confidence > stats.maxConfidence) {
+              stats.maxConfidence = confidence;
+            }
+          });
+        });
+        
+        // Find the best candidate word
+        const bestCandidates = Array.from(wordSuggestions.entries())
+          .map(([word, stats]) => ({
+            word,
+            count: stats.count,
+            sources: stats.sources.size,
+            avgConfidence: stats.totalConfidence / stats.count,
+            maxConfidence: stats.maxConfidence
+          }))
+          .filter(c => c.avgConfidence > 0.6) // Only high confidence
+          .sort((a, b) => {
+            if (a.sources !== b.sources) return b.sources - a.sources;
+            if (a.count !== b.count) return b.count - a.count;
+            return b.avgConfidence - a.avgConfidence;
+          });
+        
+        // If we have a high confidence candidate, display it
+        if (bestCandidates.length > 0) {
+          const bestWord = bestCandidates[0];
+          console.log(`🎮 Found high confidence next guess: ${bestWord.word}`);
+          
+          // Add this to the meta decision message
+          const nextGuessMsg = {
+            team: currentTeam,
+            player: 'Game',
+            message: `Team can continue and guess "${bestWord.word}" (${Math.round(bestWord.avgConfidence * 100)}% confidence) or end turn.`,
+            timestamp: Date.now() + 1,
+            isVoting: true,
+            voteType: 'continue',
+            suggestedWords: [bestWord.word],
+            confidences: [bestWord.avgConfidence]
+          };
+          
+          setLocalDiscussion(prev => [...prev, nextGuessMsg]);
+          
+          // Broadcast
+          if (socketRef.current?.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              ...nextGuessMsg,
+              type: 'discussion',
+              gameId: Number(id)
+            }));
+          }
+          
+          // Also add a vote for this word to encourage guessing
+          fetch(`/api/games/${id}/ai/vote`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'Game',
+              team: currentTeam,
+              word: bestWord.word
+            })
+          }).catch(err => console.error("Error submitting next word vote:", err));
+        } else {
+          // No good candidates, recommend ending turn
+          const endTurnRecommendationMsg = {
+            team: currentTeam,
+            player: 'Game',
+            message: "No high confidence words found. Team should consider ending turn.",
+            timestamp: Date.now() + 1,
+            isVoting: true,
+            voteType: 'end_turn'
+          };
+          
+          setLocalDiscussion(prev => [...prev, endTurnRecommendationMsg]);
+          
+          // Broadcast
+          if (socketRef.current?.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              ...endTurnRecommendationMsg,
+              type: 'discussion',
+              gameId: Number(id)
+            }));
+          }
+          
+          // Submit a meta vote for ending turn
+          fetch(`/api/games/${id}/meta/vote`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'Game',
+              team: currentTeam,
+              action: 'end_turn'
+            })
+          }).catch(err => console.error("Error submitting end turn recommendation:", err));
+        }
+        
+        // Add a meta decision entry with explicit voting flags
+        const metaDecisionMsg = {
+          team: currentTeam,
+          player: 'Game',
+          message: "Team must decide: continue guessing or end turn?",
+          timestamp: Date.now() + 2,
+          isVoting: true, // CRITICAL: Mark as voting message
+          voteType: 'meta_decision',
+          metaOptions: ['continue', 'end_turn'] // Used by the renderMessage function
+        };
+        
+        setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
+        
+        // Send via WebSocket for real-time updates
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            ...metaDecisionMsg,
+            type: 'discussion',
+            gameId: Number(id)
+          }));
+        }
+        
+        // Request AI models to vote on continue/end turn
+        fetch(`/api/games/${id}/meta/discuss`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: "Should we continue guessing or end turn?",
+            team: currentTeam,
+            triggerVoting: true
+          })
+        }).catch(err => console.error("Error triggering AI meta vote:", err));
+        
+        // Also create a meta vote display in the UI for humans to vote
+        setIsVotingActive(true);
       }
       
       return data;
     },
     
-    onSuccess: () => {
-      // Force refresh game data
-      queryClient.invalidateQueries({ queryKey: [`/api/games/${id}`] });
+    onSuccess: (data) => {
+      // Force refresh game data to update UI
+      queryClient.invalidateQueries({ 
+        queryKey: [`/api/games/${id}`],
+        refetchType: 'active'
+      });
+    },
+    
+    onError: (error) => {
+      console.error("Error making guess:", error);
+      toast({
+        title: "Error making guess",
+        description: error.message,
+        variant: "destructive"
+      });
     }
   });
 
-  // 1. Fix the timer effect to ACTUALLY decrease the timer
+  // UNIFIED TURN MANAGEMENT: Single source of truth for all turn-related operations
   useEffect(() => {
-    if (!game || game.gameState?.includes("win")) return;
+    if (!game) return;
     
-    console.log("Setting up turn timer");
+    // Central variable to track turn change in progress
+    let turnChangeInProgress = false;
+    
+    // TIMER SYNCHRONIZATION: Sync client timer with server timer on each game update
+    if (game.currentTurnStartTime) {
+      const turnStart = new Date(game.currentTurnStartTime).getTime();
+      const now = Date.now();
+      const elapsedSeconds = Math.floor((now - turnStart) / 1000);
+      const timeLeft = Math.max(0, 60 - elapsedSeconds); // Fixed 60 second turn timer
+      
+      // Only update if significantly out of sync to avoid jitter
+      if (Math.abs(timeLeft - turnTimer) > 2) {
+        console.log(`⏰ Timer sync: local=${turnTimer}, server=${timeLeft}`);
+        setTurnTimer(timeLeft);
+      }
+    }
+    
+    // CRITICAL FUNCTION: Handles turn switching with multiple redundant methods
+    const forceTurnChange = (reason: string) => {
+      if (turnChangeInProgress) return; // Prevent duplicate turn changes
+      
+      turnChangeInProgress = true;
+      const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+      const nextTeam = game.currentTurn === "red_turn" ? "blue" : "red";
+      const nextTurnState = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+      
+      console.log(`🔄 FORCE TURN CHANGE: ${currentTeam} → ${nextTeam}, reason: ${reason}`);
+      
+      // THREE PARALLEL METHODS to ensure the turn absolutely changes:
+      
+      // METHOD 1: Meta vote with high priority flag (most reliable way)
+      const metaVotePromise = fetch(`/api/games/${game.id}/meta/vote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'Game',
+          team: currentTeam,
+          action: 'end_turn',
+          timerExpired: reason === 'timer_expired',
+          highPriority: true,
+          timestamp: Date.now()
+        })
+      })
+      .then(res => res.json())
+      .catch(err => {
+        console.error('Meta vote method failed, trying backup methods:', err);
+        return { error: true };
+      });
+      
+      // METHOD 2: Direct PATCH to game state (backup method)
+      const directPatchPromise = fetch(`/api/games/${game.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          currentTurn: nextTurnState,
+          currentTurnStartTime: new Date(),
+          _timestamp: Date.now(),
+          _forceTimerSwitch: true,
+          forceTimerExpiration: reason === 'timer_expired'
+        })
+      })
+      .then(res => res.json())
+      .catch(err => {
+        console.error('Direct PATCH method failed:', err);
+        return { error: true };
+      });
+      
+      // METHOD 3: WebSocket broadcast (notification method)
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'turn_change',
+          from: currentTeam,
+          to: nextTeam,
+          reason: reason,
+          gameId: Number(game.id),
+          timestamp: Date.now(),
+          forced: true,
+          highPriority: true
+        }));
+      }
+      
+      // Process all turn change attempts and reset client state
+      Promise.all([metaVotePromise, directPatchPromise])
+        .then(() => {
+          console.log('✅ All turn change mechanisms executed');
+          
+          // RESET ALL CLIENT STATE for a clean transition
+          setLastClue(null);
+          setIsDiscussing(false);
+          setTurnTimer(60); // Reset timer explicitly for the next turn
+          aiTurnInProgress.current = false;
+          processedGameState.current = false;
+          aiDiscussionTriggered.current = false;
+          setVotedOnWords({});
+          setVotedOnMeta({});
+          setWordVoteCounts({});
+          
+          // Force refresh all game data
+          queryClient.invalidateQueries({ 
+            queryKey: [`/api/games/${game.id}`],
+            refetchType: 'active'
+          });
+          
+          // Release the lock after a short delay
+          setTimeout(() => {
+            turnChangeInProgress = false;
+          }, 2000);
+          
+          // Add final verification after a delay to GUARANTEE the turn changed
+          setTimeout(() => {
+            fetch(`/api/games/${game.id}`)
+              .then(res => res.json())
+              .then(currentGame => {
+                if (currentGame.currentTurn === game.currentTurn) {
+                  console.error("🚨 EMERGENCY: Turn did not change, using final failsafe method");
+                  
+                  // LAST RESORT: Emergency direct update with special flag
+                  fetch(`/api/games/${game.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                      currentTurn: nextTurnState,
+                      currentTurnStartTime: new Date(),
+                      _EMERGENCY_TURN_CHANGE: true
+                    })
+                  }).then(() => {
+                    // Hard reset of all local state to ensure clean UI
+                    setLocalDiscussion([]);
+                    setVotedOnWords({});
+                    setVotedOnMeta({});
+                    setWordVoteCounts({});
+                    setDisplayedPolls(new Set<string>());
+                    
+                    // Force refetch one final time
+                    queryClient.invalidateQueries({ 
+                      queryKey: [`/api/games/${game.id}`],
+                      refetchType: 'active'
+                    });
+                  });
+                }
+              });
+          }, 3000);
+        });
+    };
+    
+    // Main timer countdown interval 
     const timerInterval = setInterval(() => {
       setTurnTimer(prev => {
-        const newValue = prev > 0 ? prev - 1 : 0;
-        console.log(`Turn timer: ${prev} -> ${newValue}`);
-        return newValue;
+        // Timer already at 0, keep it at 0
+        if (prev <= 0) {
+          // If timer is already at 0, that means it expired but turn didn't change
+          // Force the turn change again as a failsafe
+          if (!turnChangeInProgress) {
+            forceTurnChange('timer_expired');
+          }
+          return 0;
+        }
+        
+        // Warning at 5 seconds
+        if (prev === 5) {
+          if (socketRef.current?.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              type: 'discussion',
+              gameId: Number(game.id),
+              team: game.currentTurn === "red_turn" ? "red" : "blue",
+              player: 'Game',
+              content: `⚠️ 5 seconds remaining!`,
+              timestamp: Date.now(),
+              timeWarning: true
+            }));
+          }
+        }
+        
+        // CRITICAL: When timer hits 1, trigger the turn change before it reaches 0
+        if (prev === 1 && !turnChangeInProgress) {
+          forceTurnChange('timer_expired');
+        }
+        
+        // Normal countdown
+        return prev - 1;
       });
     }, 1000);
     
-    return () => clearInterval(timerInterval);
-  }, [game?.id]); // Only change when game changes, not on every state change
+    // Clean up on unmount
+    return () => {
+      clearInterval(timerInterval);
+    };
+  }, [game?.id, game?.currentTurn, game?.currentTurnStartTime]);
 
   // All helper functions - define these after all hooks
   const processGameState = () => {
@@ -576,40 +1551,45 @@ export default function GamePage() {
     
     const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
     
-    // Send discussion message via WebSocket
-              if (socketRef.current?.readyState === WebSocket.OPEN) {
-                socketRef.current.send(JSON.stringify({
-                  type: 'discussion',
-        content: discussionInput,
-                  team: currentTeam,
-        player: 'human',
-        gameId: Number(id),
-                  timestamp: Date.now()
-                }));
-    }
-    
-    // Add to local game log
-        setGameLog(prev => [...prev, {
+    // Add message to local state immediately
+    const newEntry: TeamDiscussionEntry = {
           team: currentTeam,
-      action: discussionInput,
-      result: "pending",
       player: 'human',
+      message: discussionInput,
       timestamp: Date.now()
-    }]);
+    };
     
-    // Clear input
+    // Update local state first for immediate UI update
+    setLocalDiscussion(prev => [...prev, newEntry]);
+    
+    // Clear the input right away
     setDiscussionInput("");
     
-    // Also update the game state
-    if (game.teamDiscussion) {
-      const newDiscussion = [...game.teamDiscussion, {
+    // Send via WebSocket for realtime updates
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'discussion',
+        content: discussionInput,
             team: currentTeam,
-        player: 'human',
-        message: discussionInput,
+        gameId: Number(id),
         timestamp: Date.now()
-      }];
-      apiRequest("PATCH", `/api/games/${id}`, { teamDiscussion: newDiscussion });
+      }));
     }
+    
+    // Also make API call as backup
+    apiRequest(`/api/games/${id}/meta/discuss`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: discussionInput,
+        team: currentTeam
+      })
+    }).catch(error => {
+      toast({
+        title: "Failed to send message",
+        description: error.message,
+        variant: "destructive"
+      });
+    });
   };
 
   const getCardColor = (word: string): string => {
@@ -632,142 +1612,930 @@ export default function GamePage() {
     return game.revealedCards.includes(word) ? "text-white" : "text-gray-900";
   };
 
-  // Add these missing functions after your other helper functions
+  // Add this effect to detect voting activity
+  useEffect(() => {
+    if (!game) return;
+
+    const recentMessages = game.teamDiscussion?.slice(-5) || [];
+    const hasRecentVote = recentMessages.some(entry => 
+      entry.isVoting || entry.voteType || entry.action === "vote"
+    );
+    
+    setIsVotingActive(hasRecentVote);
+  }, [game?.teamDiscussion]);
+
+  // Add this useEffect to auto-scroll to the bottom whenever messages change
+  useEffect(() => {
+    if (scrollAreaRef.current) {
+      // Set a short timeout to ensure content is rendered before scrolling
+      setTimeout(() => {
+        const scrollContainer = scrollAreaRef.current;
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
+      }, 50);
+    }
+  }, [game?.teamDiscussion]);
+  
+  // Basic check for high-confidence words to guess
+  useEffect(() => {
+    if (!game || !lastClue) return;
+    
+    // Check for words that have enough votes
+    const checkVotesInterval = setInterval(() => {
+      // Find the word with most votes
+      let bestWord = '';
+      let highestVotes = 0;
+      
+      Object.entries(wordVoteCounts).forEach(([word, info]) => {
+        if (!game.revealedCards.includes(word) && info.count > highestVotes) {
+          bestWord = word;
+          highestVotes = info.count;
+        }
+      });
+      
+      // Auto-guess if we have 2+ votes
+      if (bestWord && highestVotes >= 2) {
+        console.log(`Auto-guessing: ${bestWord}`);
+        makeGuess.mutate(bestWord);
+        clearInterval(checkVotesInterval);
+      }
+    }, 3000);
+    
+    return () => clearInterval(checkVotesInterval);
+  }, [game, wordVoteCounts, lastClue, makeGuess]);
+
+  // Ref for auto-guessing timeout
+  const autoGuessTimeoutRef = useRef<NodeJS.Timeout>();
+
+  // CRITICAL: Direct aggressive auto-guessing logic - completely rewritten for reliability
+  useEffect(() => {
+    // Only run if we have a game with discussion and a current clue
+    if (!game?.teamDiscussion || !lastClue) return;
+    
+    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    
+    // Create a cache key to prevent re-processing
+    const gameStateKey = `${game.id}-${game.currentTurn}-${game.teamDiscussion.length}`;
+    
+    // Dedicated logging for this critical function
+    console.log(`⚡ AGGRESSIVE AUTO-GUESSER ACTIVATED - Game state ${gameStateKey}`);
+    
+    // STEP 1: Get all unrevealed words for this team
+    const unrevealedWords = game.words.filter(word => !game.revealedCards.includes(word));
+    
+    // Current team messages only, from most recent
+    const teamMessages = game.teamDiscussion
+      .filter(msg => msg.team === currentTeam)
+      .sort((a, b) => b.timestamp - a.timestamp);
+    
+    // Quickly extract and track ALL suggested words with their stats
+    const wordSuggestions = new Map();
+    
+    // First pass - collect all words and their data
+    teamMessages.forEach(msg => {
+      if (!msg.suggestedWords || msg.suggestedWords.length === 0) return;
+      
+      msg.suggestedWords.forEach((word, idx) => {
+        // Skip meta options and revealed cards
+        if (word === "CONTINUE" || word === "END TURN" || game.revealedCards.includes(word)) return;
+        
+        // Get confidence for this word
+        const confidence = msg.confidences && idx < msg.confidences.length 
+          ? msg.confidences[idx] 
+          : 0.5;
+        
+        // Initialize if needed
+        if (!wordSuggestions.has(word)) {
+          wordSuggestions.set(word, {
+            count: 0,
+            totalConfidence: 0,
+            sources: new Set(),
+            maxConfidence: 0
+          });
+        }
+        
+        // Update stats
+        const stats = wordSuggestions.get(word);
+        stats.count++;
+        stats.totalConfidence += confidence;
+        stats.sources.add(msg.player);
+        
+        // Track highest confidence
+        if (confidence > stats.maxConfidence) {
+          stats.maxConfidence = confidence;
+        }
+      });
+    });
+    
+    // STEP 2: Find the absolute best word to guess
+    const bestCandidates = Array.from(wordSuggestions.entries())
+      .map(([word, stats]) => ({
+        word,
+        count: stats.count,
+        sources: stats.sources.size,
+        avgConfidence: stats.totalConfidence / stats.count,
+        maxConfidence: stats.maxConfidence
+      }))
+      .filter(c => c.avgConfidence > 0.6) // Only consider high confidence candidates
+      .sort((a, b) => {
+        // Multi-factor sorting (in priority order)
+        if (a.sources !== b.sources) return b.sources - a.sources; // Most sources first
+        if (a.count !== b.count) return b.count - a.count; // Most mentions first
+        return b.avgConfidence - a.avgConfidence; // Highest confidence first
+      });
+    
+    // Log potential candidates
+    console.log(`🎲 Auto-guess candidates (${bestCandidates.length}):`, 
+      bestCandidates.map(c => `${c.word} (${c.avgConfidence.toFixed(2)} from ${c.sources} sources)`).join(", ")
+    );
+    
+    // STEP 3: Direct auto-guess if we have a very strong candidate
+    if (bestCandidates.length > 0) {
+      const bestWord = bestCandidates[0];
+      
+      // Check if this is a very high confidence word
+      const isVeryHighConfidence = 
+        (bestWord.sources >= 2 && bestWord.avgConfidence > 0.7) || // Multiple sources with high confidence
+        (bestWord.count >= 3 && bestWord.avgConfidence > 0.65) || // Many mentions with good confidence
+        (bestWord.maxConfidence > 0.85); // Any extremely high confidence mention
+      
+      // Auto-guess immediately if very high confidence (without voting)
+      if (isVeryHighConfidence) {
+        console.log(`🎯 CRITICAL: Direct auto-guess initiated for high-confidence word: ${bestWord.word}`);
+        
+        // Add to word votes for tracking
+        setWordVoteCounts(prev => ({
+          ...prev,
+          [bestWord.word]: {
+            count: 10, // Force over threshold
+            threshold: 2,
+            voters: [...Array.from(wordSuggestions.get(bestWord.word).sources), 'Game', 'autoVote']
+          }
+        }));
+        
+        // Announcement message
+        const autoGuessMsg = {
+          team: currentTeam,
+          player: 'Game',
+          message: `Auto-guessing high confidence word: ${bestWord.word}`,
+          timestamp: Date.now(),
+          suggestedWords: [bestWord.word],
+          confidences: [0.95]
+        };
+        
+        // Update chat
+        setLocalDiscussion(prev => [...prev, autoGuessMsg]);
+        
+        // WebSocket notification
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            ...autoGuessMsg,
+            type: 'discussion',
+            gameId: Number(game.id)
+          }));
+        }
+        
+        // EXECUTE THE GUESS with a short delay
+        autoGuessTimeoutRef.current = setTimeout(() => {
+          // Final check that word hasn't been guessed
+          if (!game.revealedCards.includes(bestWord.word)) {
+            console.log(`🔥 EXECUTING direct auto-guess for: ${bestWord.word}`);
+            makeGuess.mutate(bestWord.word);
+          }
+        }, 1000);
+      } 
+      // Otherwise trigger voting for a good candidate
+      else if (bestWord.avgConfidence > 0.65 && !displayedPolls.has(bestWord.word)) {
+        console.log(`🗳️ Starting vote for candidate word: ${bestWord.word}`);
+        
+        // Add to displayed polls
+        setDisplayedPolls(prev => new Set([...prev, bestWord.word]));
+        
+        // Create vote message
+        const voteMsg = {
+          team: currentTeam,
+          player: 'Game',
+          message: `Team vote suggested for word: ${bestWord.word}`,
+          timestamp: Date.now(),
+          suggestedWords: [bestWord.word],
+          confidences: [bestWord.avgConfidence],
+          isVoting: true
+        };
+        
+        // Update chat
+        setLocalDiscussion(prev => [...prev, voteMsg]);
+        
+        // WebSocket notification
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            ...voteMsg,
+            type: 'discussion',
+            gameId: Number(game.id)
+          }));
+        }
+        
+        // Add a system vote to get voting started
+        fetch(`/api/games/${game.id}/ai/vote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'Game',
+            team: currentTeam,
+            word: bestWord.word
+          })
+        })
+        .then(res => res.json())
+        .then(data => {
+          console.log("System vote submitted, result:", data);
+          
+          // If threshold reached, make the guess
+          if (data.thresholdReached) {
+            const guessMsg = {
+              team: currentTeam,
+              player: 'Game',
+              message: `Threshold reached, guessing: ${bestWord.word}`,
+              timestamp: Date.now() + 1
+            };
+            
+            setLocalDiscussion(prev => [...prev, guessMsg]);
+            
+            // Make the guess
+            setTimeout(() => {
+              if (!game.revealedCards.includes(bestWord.word)) {
+                makeGuess.mutate(bestWord.word);
+              }
+            }, 800);
+          }
+        });
+      }
+    }
+    
+    // Cleanup
+    return () => {
+      if (autoGuessTimeoutRef.current) {
+        clearTimeout(autoGuessTimeoutRef.current);
+      }
+    };
+  }, [game?.id, game?.teamDiscussion?.length, game?.currentTurn, game?.revealedCards, lastClue]);
+  
+  // Enhanced helper function to handle voting on a word or meta action
+  const handleWordVote = (word: string, currentTeam: string) => {
+    console.log(`Voting for word: ${word} as team ${currentTeam}`);
+    
+    // Special case for meta-voting options (CONTINUE or END TURN)
+    if (word === "CONTINUE" || word === "END TURN") {
+      // Use our meta voting handler with the special word
+      handleMetaVote("continue", word);
+      return;
+    }
+    
+    // Prevent double voting - track that this player has voted for this word
+    let alreadyVoted = false;
+    
+    setVotedOnWords(prev => {
+      // Initialize if first vote for this word
+      if (!prev[word]) {
+        prev[word] = new Set(['human']);
+      } else if (prev[word].has('human')) {
+        // Already voted
+        alreadyVoted = true;
+        return prev;
+      } else {
+        // Add this player's vote
+        prev[word].add('human');
+      }
+      return { ...prev };
+    });
+    
+    if (alreadyVoted) {
+      toast({
+        title: "Already voted",
+        description: "You've already voted for this word",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    // Update our local vote tracking
+    setWordVoteCounts(prev => {
+      if (!prev[word]) {
+        // First vote for this word
+        return {
+          ...prev,
+          [word]: { 
+            count: 1,
+            threshold: 2, // Need at least 2 votes
+            voters: ['human']
+          }
+        };
+      } else if (!prev[word].voters.includes('human')) {
+        // Add this player's vote if not already counted
+        return {
+          ...prev,
+          [word]: {
+            count: prev[word].count + 1,
+            threshold: prev[word].threshold,
+            voters: [...prev[word].voters, 'human']
+          }
+        };
+      }
+      return prev;
+    });
+    
+    // Create a vote object for the server
+    const vote = {
+      model: 'human',
+      team: currentTeam,
+      word
+    };
+    
+    // Add the vote message to the discussion
+    const voteMessage = {
+      team: currentTeam,
+      player: 'human',
+      message: `Voted to guess: ${word}`,
+      timestamp: Date.now(),
+      suggestedWords: [word],
+      confidences: [0.9]
+    };
+    
+    setLocalDiscussion(prev => [...prev, voteMessage]);
+    
+    // Send via WebSocket for real-time updates
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        ...voteMessage,
+        type: 'discussion',
+        gameId: Number(game?.id)
+      }));
+    }
+    
+    // Immediate UI feedback
+    toast({
+      title: "Vote submitted",
+      description: `You voted for the word: ${word}`,
+    });
+    
+    // Use our existing mutation to send the vote
+    queryClient.invalidateQueries({ queryKey: [`/api/games/${game?.id}`] });
+    
+    // Send the vote to the server
+    fetch(`/api/games/${game?.id}/ai/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(vote)
+    })
+    .then(response => response.json())
+    .then(data => {
+      console.log("Vote submitted successfully:", data);
+      
+      // Check if we've reached the voting threshold to make a guess
+      if (data.thresholdReached || data.voteCount >= 2) {
+        console.log(`✓ Vote threshold reached for ${word}!`);
+        
+        // Check if we have enough local votes to trigger a guess
+        const voteInfo = wordVoteCounts[word];
+        if (voteInfo && voteInfo.count >= voteInfo.threshold) {
+          // We have enough votes, so make the guess automatically
+          console.log(`🎯 Auto-guessing word ${word} based on votes`);
+          
+          // Announce the auto-guess
+          const autoGuessMsg = {
+            team: currentTeam,
+            player: 'Game',
+            message: `Auto-guessing ${word} based on team votes!`,
+            timestamp: Date.now(),
+            suggestedWords: [word],
+            confidences: [0.95]
+          };
+          
+          setLocalDiscussion(prev => [...prev, autoGuessMsg]);
+          
+          // Slight delay to allow UI to update
+          setTimeout(() => {
+            if (!game?.revealedCards.includes(word)) {
+              makeGuess.mutate(word);
+            }
+          }, 1000);
+        }
+      }
+      
+      // Force refresh game data
+      queryClient.invalidateQueries({ 
+        queryKey: [`/api/games/${game?.id}`],
+        refetchType: 'active'
+      });
+    })
+    .catch(error => {
+      console.error("Error submitting vote:", error);
+      toast({
+        title: "Failed to submit vote",
+        description: "An error occurred while voting",
+        variant: "destructive"
+      });
+    });
+  };
+
+  // Completely rewritten renderTeamDiscussion function with simplicity and reliability in mind
   const renderTeamDiscussion = () => {
     if (!game) return null;
-
-    const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-    const teamColor = currentTeam === "red" ? "red" : "blue";
-    const discussions = (game.teamDiscussion || []) as TeamDiscussionEntry[];
-
-    const sortedDiscussions = discussions
-      .filter(entry => entry.team === currentTeam)
+    
+    // CRITICAL: Merge all sources of messages and deduplicate for maximum reliability
+    const allMessages = [...(game.teamDiscussion || []), ...(localDiscussion || [])];
+    
+    // Custom hash function to better identify unique messages
+    const getMessageHash = (msg: any): string => {
+      if (!msg) return '';
+      
+      // Extract key fields to identify the message
+      const timestamp = msg.timestamp || 0;
+      const player = msg.player || '';
+      const message = msg.message || msg.content || '';
+      
+      // Include a bit of message content to better distinguish messages
+      return `${timestamp}-${player}-${message.slice(0, 10)}`;
+    };
+    
+    // Use a Map to deduplicate messages with a better hash function
+    const messageMap = new Map();
+    allMessages.forEach(msg => {
+      // Process each message to ensure all fields are populated
+      const processedMsg = {
+        ...msg,
+        message: msg.message || msg.content || '', // Ensure message field is populated
+        confidences: msg.confidences || [msg.confidence || 0.5], // Ensure confidences array
+        suggestedWords: msg.suggestedWords || (msg.suggestedWord ? [msg.suggestedWord] : []) // Ensure suggestedWords array
+      };
+      
+      const key = getMessageHash(processedMsg);
+      messageMap.set(key, processedMsg);
+    });
+    
+    // Sort by timestamp to get chronological order
+    let teamDiscussion = Array.from(messageMap.values())
       .sort((a, b) => a.timestamp - b.timestamp);
-
+      
+    // CRITICAL: Filter messages to only show current team's messages
+    const currentActiveTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+    teamDiscussion = teamDiscussion.filter(msg => msg.team === currentActiveTeam || msg.isTurnChange);
+    
+    console.log(`💬 Displaying ${teamDiscussion.length} team discussion messages`);
+    
+    // Get current team info
+    const teamColor = currentActiveTeam === "red" ? "red" : "blue";
+    
+    // Extract suggestion and voting messages for highlighting
+    const suggestionMessages = teamDiscussion.filter(msg => 
+      msg.suggestedWords && msg.suggestedWords.length > 0
+    );
+    const votingMessages = teamDiscussion.filter(msg => 
+      msg.isVoting || msg.voteType || msg.action === "vote"
+    );
+    
+    // Debug log
+    console.log(`📊 All messages: ${teamDiscussion.length}, With suggestions: ${suggestionMessages.length}, With voting: ${votingMessages.length}`);
+    
     return (
-      <Card className={`border-${teamColor}-500 border-2 shadow-md overflow-hidden`}>
-        <div className={`bg-${teamColor}-100 px-4 py-3 border-b flex justify-between items-center`}>
-          <h3 className={`font-bold text-lg text-${teamColor}-800`}>
-              Team Discussion
+      <Card className="h-[400px] overflow-hidden flex flex-col">
+        <CardContent className={`flex-1 p-4 flex flex-col h-full bg-${teamColor}-50/30`}>
+          <div className="flex justify-between items-center mb-4">
+            <h3 className={`font-bold text-lg text-${teamColor}-700`}>
+              {teamColor === "red" ? "Red" : "Blue"} Team Discussion
             </h3>
             {isDiscussing && (
-            <div className="flex items-center gap-2 bg-white rounded-full px-3 py-1 shadow-sm">
-                <Clock className="w-4 h-4" />
-                <span className={`text-sm font-medium ${
-                  discussionTimer <= 10 ? 'text-red-500' : ''
-                }`}>
-                  {discussionTimer}s
-                </span>
-              {aiTurnInProgress.current && (
-                <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full animate-pulse ml-2">
-                  AIs thinking...
-                  </span>
-                )}
+              <div className="flex items-center text-amber-600">
+                <Clock className="w-4 h-4 mr-1" />
+                <span>{discussionTimer}s</span>
               </div>
             )}
           </div>
-
-        <ScrollArea className="h-[400px] p-4">
-            <div className="space-y-3">
-            {sortedDiscussions.length > 0 ? (
-              sortedDiscussions.map((entry, index) => {
-                const modelInfo = entry.player === "human" 
-                  ? { name: "You", Icon: () => <span>👤</span> }
-                  : (AI_MODEL_INFO[entry.player as AIModel] || {
-                  name: entry.player,
-                  Icon: Bot
-                    });
+          
+          {/* Debug info */}
+          <div className="bg-gray-50 p-1 mb-2 text-xs text-gray-500 rounded">
+            Messages: {teamDiscussion.length} total, {suggestionMessages.length} with suggestions, {votingMessages.length} with voting
+          </div>
+          
+          {/* Chat messages in a simple chronological list */}
+          <ScrollArea className="pr-4 flex-1">
+            <div className="space-y-4 pb-4" ref={scrollAreaRef}>
+              {teamDiscussion.length === 0 && (
+                <div className="text-center p-4 text-gray-500">No discussion messages yet</div>
+              )}
+              
+              {/* Add simple vote options if we have a clue */}
+                      {/* No manual meta-vote buttons - should use Among Us style voting UI */}
+              
+              {/* Show all messages in chronological order with special styling for suggestions/votes */}
+              {teamDiscussion.map((entry, idx) => {
+                // Check message properties for styling
+                const hasSuggestions = entry.suggestedWords && entry.suggestedWords.length > 0;
+                const isVotingMsg = entry.isVoting || entry.voteType || entry.action === "vote";
                 
-                const isHuman = entry.player === "human";
-
-                return (
-                  <div
-                    key={index}
-                    className={`flex ${isHuman ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div className={`max-w-[80%] rounded-2xl p-3 ${
-                      isHuman 
-                        ? 'bg-blue-600 text-white rounded-br-none' 
-                        : `bg-${teamColor}-100 text-${teamColor}-900 rounded-bl-none`
-                    }`}>
-                      <div className="flex items-center gap-2 mb-1">
-                        {!isHuman && (typeof modelInfo.Icon === 'function' ? 
-                          <modelInfo.Icon className="w-4 h-4" /> : 
-                          modelInfo.Icon && <modelInfo.Icon className="w-4 h-4" />
-                        )}
-                        <span className="font-medium text-sm">{modelInfo.name}</span>
-                        <span className="text-xs opacity-70 ml-auto">
-                          {entry.timestamp
-                            ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
-                            : ""}
-                        </span>
-                    </div>
-                      <p className="text-sm">{entry.message}</p>
-                      {entry.confidence !== undefined && entry.suggestedWord && (
-                        <div className="mt-2 text-xs font-medium p-1 rounded bg-white/20">
-                          Confidence: {Math.round(entry.confidence * 100)}% • 
-                          Suggests: <span className="font-bold">{entry.suggestedWord}</span>
+                // Check if this is a meta decision message
+                const isMetaDecision = entry.voteType === 'meta_decision' || entry.metaOptions?.length > 0;
+                
+                // Special handling for meta decisions
+                if (isMetaDecision) {
+                  // Format like a normal message but with visual indicators of the options
+                  return (
+                    <div key={`meta-decision-${entry.timestamp}`} className="flex items-start gap-2">
+                      <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 shadow-sm">
+                        <Clock className="w-5 h-5 text-gray-500" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-medium text-gray-800">
+                          {entry.player}
+                          <span className="text-xs text-gray-500 ml-2">
+                            {new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                          </span>
+                          <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
+                            decision
+                          </span>
                         </div>
-                      )}
+                        
+                        <div className="p-2 rounded-md border border-blue-200 bg-blue-50/40 shadow-sm">
+                          <div className="mb-2">{entry.message}</div>
+                          
+                          {/* Among Us style meta decision UI - No manual buttons, just display status */}
+                          <div className="flex flex-col space-y-3 mt-2">
+                            {/* Continue guessing option with voters */}
+                            <div className="p-3 rounded-md bg-green-50 border border-green-100 flex justify-between items-center">
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-green-700">👍 Continue Guessing</span>
+                                <div className="flex -space-x-2">
+                                  {Object.entries(votedOnMeta)
+                                    .filter(([key]) => key.split('-')[1] === 'continue')
+                                    .map(([key, voters]) => 
+                                      Array.from(voters).map((voter, i) => {
+                                        const isAI = voter !== 'human' && voter !== 'Game';
+                                        const ModelIcon = isAI && AI_MODEL_INFO[voter as AIModel]?.Icon 
+                                          ? AI_MODEL_INFO[voter as AIModel]?.Icon 
+                                          : Bot;
+                                          
+                                        return (
+                                          <div 
+                                            key={`continue-${voter}-${i}`}
+                                            className="w-6 h-6 rounded-full flex items-center justify-center shadow-sm border-2 border-white bg-green-100"
+                                            title={voter}
+                                          >
+                                            {voter === 'human' ? (
+                                              <span className="text-[10px]">👤</span>
+                                            ) : isAI ? (
+                                              <ModelIcon className="w-3 h-3" />
+                                            ) : (
+                                              <Clock className="w-3 h-3 text-gray-500" />
+                                            )}
+                                          </div>
+                                        );
+                                      })
+                                    )
+                                  }
+                                </div>
+                              </div>
+                              <div className="text-xs text-green-700 opacity-70">Auto-voting</div>
+                            </div>
+
+                            {/* End turn option with voters */}
+                            <div className="p-3 rounded-md bg-red-50 border border-red-100 flex justify-between items-center">
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-red-700">👎 End Turn</span>
+                                <div className="flex -space-x-2">
+                                  {Object.entries(votedOnMeta)
+                                    .filter(([key]) => key.split('-')[1] === 'end_turn')
+                                    .map(([key, voters]) => 
+                                      Array.from(voters).map((voter, i) => {
+                                        const isAI = voter !== 'human' && voter !== 'Game';
+                                        const ModelIcon = isAI && AI_MODEL_INFO[voter as AIModel]?.Icon 
+                                          ? AI_MODEL_INFO[voter as AIModel]?.Icon 
+                                          : Bot;
+                                          
+                                        return (
+                                          <div 
+                                            key={`endturn-${voter}-${i}`}
+                                            className="w-6 h-6 rounded-full flex items-center justify-center shadow-sm border-2 border-white bg-red-100"
+                                            title={voter}
+                                          >
+                                            {voter === 'human' ? (
+                                              <span className="text-[10px]">👤</span>
+                                            ) : isAI ? (
+                                              <ModelIcon className="w-3 h-3" />
+                                            ) : (
+                                              <Clock className="w-3 h-3 text-gray-500" />
+                                            )}
+                                          </div>
+                                        );
+                                      })
+                                    )
+                                  }
+                                </div>
+                              </div>
+                              <div className="text-xs text-red-700 opacity-70">Auto-voting</div>
+                            </div>
+                          </div>
+                          
+                          {/* No need for additional model display as they're now shown in the 'Among Us' style UI above */}
+                        </div>
+                      </div>
                     </div>
+                  );
+                }
+                
+                // Create an appropriate key for React rendering
+                const stableKey = `msg-${entry.timestamp}-${entry.player}-${idx}-${hasSuggestions ? 'sugg' : ''}-${isVotingMsg ? 'vote' : ''}`;
+                
+                return renderMessage(entry, stableKey, teamColor, hasSuggestions, isVotingMsg);
+              })}
+              
+              {/* If any words have been suggested, display a Poll UI summarizing votes */}
+              {suggestionMessages.length > 0 && (
+                <div className="mt-4 border-t pt-4 border-gray-200">
+                  <div className="flex justify-between items-center mb-2">
+                    <h4 className="font-medium text-sm text-gray-600">Current Suggested Words:</h4>
+                    <span className="text-xs text-gray-500">Word needs 2+ votes to guess</span>
                   </div>
-                );
-              })
-            ) : (
-              <div className="text-center py-8 text-gray-500">
-                {lastClue ? (
-                  <div>
-                    <p>Discussing clue: <strong>{lastClue.word} ({lastClue.number})</strong></p>
-                    <p className="mt-2 text-sm">Waiting for team members to respond...</p>
+                  <div className="space-y-2">
+                    {Array.from(new Set(suggestionMessages.flatMap(msg => msg.suggestedWords))).map(word => {
+                      // Get all messages mentioning this word to get player votes
+                      const messagesWithWord = teamDiscussion.filter(msg => 
+                        msg.suggestedWords?.includes(word)
+                      );
+                      
+                      // Get all players who suggested or voted for this word
+                      const wordVoters = new Set([
+                        ...messagesWithWord.map(msg => msg.player),
+                        ...(votedOnWords[word] ? Array.from(votedOnWords[word]) : [])
+                      ]);
+                      
+                      // Calculate average confidence from suggestions
+                      const confidences = messagesWithWord
+                        .map(msg => {
+                          const idx = msg.suggestedWords?.indexOf(word) || 0;
+                          return msg.confidences && idx < msg.confidences.length ? 
+                            msg.confidences[idx] : 0.5;
+                        });
+                      
+                      const avgConfidence = confidences.length > 0 ? 
+                        confidences.reduce((sum, val) => sum + val, 0) / confidences.length : 0.5;
+                      
+                      // Get vote information from our local tracking
+                      const voteInfo = wordVoteCounts[word] || { 
+                        count: wordVoters.size, 
+                        threshold: 2,
+                        voters: Array.from(wordVoters)
+                      };
+                      
+                      // Check if we have enough votes to make a guess
+                      const hasEnoughVotes = voteInfo.count >= voteInfo.threshold;
+                      const isHighConfidence = avgConfidence > 0.6;
+                      const canGuess = hasEnoughVotes && isHighConfidence;
+                      
+                      // Check if human has already voted
+                      const humanHasVoted = votedOnWords[word]?.has('human') || false;
+                      
+                      return (
+                        <div 
+                          key={`poll-${word}`}
+                          className={`p-3 rounded-lg border ${
+                            canGuess ? 'border-green-500 bg-green-50' : 
+                            isHighConfidence ? 'border-amber-300 bg-amber-50/30' : 
+                            'border-gray-200 bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-lg">{word}</span>
+                            <span className={`text-sm px-2 py-1 rounded-full ${
+                              avgConfidence > 0.7 ? 'bg-green-100 text-green-800' : 
+                              avgConfidence > 0.4 ? 'bg-amber-100 text-amber-800' : 
+                              'bg-red-100 text-red-700'
+                            }`}>
+                              Confidence: {Math.round(avgConfidence * 100)}%
+                            </span>
+                          </div>
+                          
+                          <div className="mt-3 flex justify-between items-center">
+                            <div>
+                              <div className="text-sm font-medium mb-1">Team votes: {voteInfo.count}/{voteInfo.threshold}</div>
+                              <div className="flex -space-x-2">
+                                {voteInfo.voters.map((player, i) => {
+                                  const isAI = player !== 'human' && player !== 'Game';
+                                  const ModelIcon = isAI && AI_MODEL_INFO[player as AIModel]?.Icon 
+                                    ? AI_MODEL_INFO[player as AIModel]?.Icon 
+                                    : Bot;
+                                    
+                                  return (
+                                    <div 
+                                      key={`voter-${player}-${i}`}
+                                      className={`w-8 h-8 rounded-full ${
+                                        player === 'human' ? 'bg-blue-100' : 
+                                        isAI ? `bg-${teamColor}-100` : 'bg-gray-100'
+                                      } flex items-center justify-center shadow-sm border-2 border-white`}
+                                      title={player === 'human' ? 'You' : player}
+                                    >
+                                      {player === 'human' ? (
+                                        <span className="text-sm">👤</span>
+                                      ) : isAI ? (
+                                        <ModelIcon className="w-5 h-5" />
+                                      ) : (
+                                        <Clock className="w-4 h-4 text-gray-500" />
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                            
+                            <div className="flex gap-2">
+                              {/* Auto-guessing indicator - no manual buttons needed */}
+                              <div className="text-xs px-2 py-1 rounded-md">
+                                {canGuess ? (
+                                  <span className="text-green-700 bg-green-100 px-2 py-1 rounded">
+                                    Auto-guessing...
+                                  </span>
+                                ) : (
+                                  <span className="text-amber-700 bg-amber-50 px-2 py-1 rounded animate-pulse">
+                                    Collecting votes ({voteInfo.count}/{voteInfo.threshold})
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          
+                          {/* Progress bar to show voting progress */}
+                          <div className="mt-2 h-1.5 w-full bg-gray-200 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full ${
+                                canGuess ? "bg-green-500" : "bg-amber-500"
+                              }`}
+                              style={{ width: `${Math.min(100, (voteInfo.count / voteInfo.threshold) * 100)}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ) : (
-                  <p>Waiting for spymaster to give a clue...</p>
-                )}
-              </div>
-            )}
+                </div>
+              )}
             </div>
           </ScrollArea>
-
-        {/* Add discussion input for human players */}
-        <div className="p-3 border-t bg-gray-50">
-          <div className="flex gap-2">
+          
+          {/* Input field for human players */}
+          <div className="mt-4 flex gap-2">
             <input
               type="text"
               value={discussionInput}
               onChange={(e) => setDiscussionInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && sendDiscussion()}
-              placeholder="Type your thoughts here..."
-              className="flex-1 p-2 rounded-full border focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              disabled={aiTurnInProgress.current || game.gameState?.includes("win")}
+              placeholder="Type your thoughts..."
+              className="flex-1 border rounded px-3 py-2"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && discussionInput.trim()) {
+                  sendDiscussion();
+                }
+              }}
             />
             <Button 
-              onClick={sendDiscussion} 
-              disabled={aiTurnInProgress.current || game.gameState?.includes("win")}
-              className="rounded-full"
-              size="sm"
+              onClick={sendDiscussion}
+              disabled={!discussionInput.trim()}
+              className={`bg-${teamColor}-600 hover:bg-${teamColor}-700 text-white`}
             >
               Send
             </Button>
           </div>
-        </div>
-
-        {/* Add a manual discussion trigger button */}
-        {!isDiscussing && lastClue && (
-          <div className="p-4 border-t bg-gray-50 flex justify-center">
-            <Button 
-              onClick={() => {
-                setIsDiscussing(true);
-                aiDiscussionTriggered.current = false;
-                processGameState();
-              }}
-              className={`bg-${teamColor}-500 hover:bg-${teamColor}-600 text-white`}
-              disabled={aiTurnInProgress.current || game.gameState?.includes("win")}
-            >
-              Discuss Clue: {lastClue.word} ({lastClue.number})
-            </Button>
-          </div>
-        )}
+        </CardContent>
       </Card>
+    );
+  };
+
+  // Enhanced Helper function to render a single message with clickable suggested words for easy voting
+  const renderMessage = (
+    entry: TeamDiscussionEntry, 
+    key: string, 
+    teamColor: string, 
+    hasSuggestions = false, 
+    isVotingMsg = false
+  ) => {
+    const isAI = entry.player !== 'Game' && entry.player !== 'human';
+    const ModelIcon = isAI && AI_MODEL_INFO[entry.player as AIModel]?.Icon 
+      ? AI_MODEL_INFO[entry.player as AIModel]?.Icon 
+      : Bot;
+    
+    // Determine actual message team color (red or blue)
+    const msgTeamColor = entry.team === "red" ? "red" : "blue";
+    // Is this message from the current team or opponent?
+    const isCurrentTeam = entry.team === (game?.currentTurn === "red_turn" ? "red" : "blue");
+    
+    // Add opacity for opponent team messages
+    const opacityClass = isCurrentTeam ? "opacity-100" : "opacity-70";
+    
+    // Add special classes for suggestion/voting messages
+    const specialClassNames = hasSuggestions ? "border-amber-300 shadow-sm" 
+      : isVotingMsg ? "border-blue-300 shadow-md" 
+      : "";
+    
+    // Check if this is a turn change message (for stronger visual separation)
+    const isTurnChangeMsg = entry.message.includes("TEAM'S TURN") || entry.isTurnChange;
+    const isTurnStart = entry.message.includes("New Discussion Begins");
+
+    return (
+      <motion.div
+        key={key}
+        initial={{ opacity: 0, y: 5 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2 }}
+        className={`flex items-start gap-2 ${opacityClass} ${isTurnChangeMsg ? "border-b pb-3 mb-3" : ""}`}
+      >
+        <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center 
+          ${isAI ? `bg-${msgTeamColor}-100` : 'bg-gray-100'} shadow-sm`}
+        >
+          {isAI ? (
+            <ModelIcon className="w-5 h-5" />
+          ) : (
+            entry.player === 'Game' ? 
+              <Clock className="w-5 h-5 text-gray-500" /> : 
+              <span className="text-sm">👤</span>
+          )}
+        </div>
+        <div className="flex-1">
+          <div className={`font-medium ${isAI ? `text-${msgTeamColor}-700` : 'text-gray-800'}`}>
+            {isAI ? getModelDisplayName(entry.player as AIModel) : entry.player}
+            <span className="text-xs text-gray-500 ml-2">
+              {entry.timestamp 
+                ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+                : new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+              {!isCurrentTeam && (
+                <span className={`ml-1 text-${msgTeamColor}-500 font-medium`}>({msgTeamColor === "red" ? "RED" : "BLUE"})</span>
+              )}
+            </span>
+            
+            {/* Special badge for important messages */}
+            {(hasSuggestions || isVotingMsg) && (
+              <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${
+                hasSuggestions ? "bg-amber-100 text-amber-800" : 
+                isVotingMsg ? "bg-blue-100 text-blue-800" : ""
+              }`}>
+                {hasSuggestions && entry.suggestedWords?.length ? `${entry.suggestedWords.length} word${entry.suggestedWords.length > 1 ? 's' : ''}` : ''}
+                {hasSuggestions && isVotingMsg ? ' + ' : ''}
+                {isVotingMsg ? 'vote' : ''}
+              </span>
+            )}
+          </div>
+          
+          {/* Message content with special styling for important messages */}
+          <div className={`p-2 rounded-md border
+            ${isTurnStart ? "bg-purple-50 border-purple-300 font-bold text-center" : ""}
+            ${isTurnChangeMsg && !isTurnStart ? "bg-gray-100 border-gray-300 text-center font-semibold" : ""}
+            ${isAI && !isTurnChangeMsg ? `bg-${msgTeamColor}-50` : (!isTurnChangeMsg ? 'bg-white' : '')} 
+            ${!isCurrentTeam && !isTurnChangeMsg ? `border-${msgTeamColor}-200` : (!isTurnChangeMsg ? 'border-gray-100' : '')}
+            ${specialClassNames} 
+            ${hasSuggestions && !isTurnChangeMsg ? `bg-amber-50/40` : ''} 
+            ${isVotingMsg && !isTurnChangeMsg ? `bg-blue-50/40` : ''}`
+          }>
+            <div className="mb-1">{entry.message}</div>
+            
+            {/* If message has suggested words, show them as clickable buttons for voting */}
+            {hasSuggestions && entry.suggestedWords && entry.suggestedWords.length > 0 && !entry.suggestedWords.includes("CONTINUE") && !entry.suggestedWords.includes("END TURN") && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {entry.suggestedWords.map((word, idx) => {
+                  // Skip meta voting options and already revealed words
+                  if (word === "CONTINUE" || word === "END TURN" || (game?.revealedCards || []).includes(word)) return null;
+                  
+                  // Get confidence for this word
+                  const wordConfidence = entry.confidences && idx < entry.confidences.length ? 
+                    entry.confidences[idx] : 0.5;
+                  
+                  // Check if this word already has votes
+                  const hasVotes = wordVoteCounts[word] && wordVoteCounts[word].count > 0;
+                  const humanHasVoted = votedOnWords[word]?.has('human');
+                  
+                  return (
+                    <Button
+                      key={`word-btn-${word}-${idx}`}
+                      onClick={() => handleWordVote(word, teamColor)}
+                      variant={humanHasVoted ? "default" : "outline"}
+                      className={`text-xs py-1 px-2 h-auto ${
+                        wordConfidence > 0.7 ? 
+                          (humanHasVoted ? "bg-green-600" : "hover:bg-green-100 border-green-300") : 
+                        wordConfidence > 0.4 ? 
+                          (humanHasVoted ? "bg-amber-600" : "hover:bg-amber-100 border-amber-300") : 
+                          (humanHasVoted ? "bg-gray-600" : "hover:bg-gray-100 border-gray-300")
+                      }`}
+                    >
+                      {word} 
+                      <span className="ml-1 text-[10px] opacity-80">
+                        {hasVotes && wordVoteCounts[word] ? 
+                          `(${wordVoteCounts[word].count}/${wordVoteCounts[word].threshold})` : 
+                          `(${Math.round(wordConfidence * 100)}%)`
+                        }
+                      </span>
+                      {humanHasVoted && <span className="ml-1">✓</span>}
+                    </Button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </motion.div>
     );
   };
 
@@ -785,11 +2553,11 @@ export default function GamePage() {
     );
     
     if (filteredLog.length === 0) {
-      return (
+    return (
         <div className="text-center p-6 text-gray-500">
           <div className="mb-2">📜</div>
           No game actions yet
-        </div>
+              </div>
       );
     }
 
@@ -801,8 +2569,8 @@ export default function GamePage() {
             const isClue = entry.action.includes("clue");
             const hasReasoning = entry.reasoning && typeof entry.reasoning === 'string';
 
-            return (
-              <div
+                return (
+                  <div
                 key={i} 
                 className={`p-3 rounded-lg border-l-4 ${
                   isRed 
@@ -815,7 +2583,7 @@ export default function GamePage() {
                     ? <span className="text-xl">🔍</span>
                     : getLogEmoji(entry.result)
                   }
-                </div>
+                      </div>
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
                     <span className={`font-semibold ${isRed ? "text-red-700" : "text-blue-700"}`}>
@@ -824,14 +2592,14 @@ export default function GamePage() {
                     {entry.player && (
                       <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">
                         {entry.player === "human" ? "You" : entry.player}
-                      </span>
-                    )}
+                        </span>
+                      )}
                     <span className="text-xs text-gray-500 ml-auto">
                       {entry.timestamp 
                         ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
                         : new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                     </span>
-                  </div>
+                    </div>
                   <p className={`text-gray-800 ${isClue ? "font-medium" : ""}`}>
                     {entry.action}
                   </p>
@@ -857,11 +2625,11 @@ export default function GamePage() {
                     </div>
                   )}
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      </ScrollArea>
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
     );
   };
 
@@ -880,6 +2648,214 @@ export default function GamePage() {
     }
   };
 
+  // ENHANCED: Function to handle meta voting (continue/end turn)
+  const handleMetaVote = (action: "continue" | "end_turn" | "discuss_more", team: string) => {
+    console.log(`Submitting meta vote for action: ${action}, team: ${team}`);
+    
+    if (!game?.id) {
+      console.error("Cannot vote - no active game");
+      return;
+    }
+    
+    // Special case for voting on CONTINUE/END TURN as words
+    if (action === "continue" && team === "CONTINUE") {
+      // Handle as a continue vote
+      action = "continue";
+      team = game.currentTurn === "red_turn" ? "red" : "blue";
+      
+      toast({
+        title: "Continue vote",
+        description: "You voted to continue guessing",
+      });
+    } else if (action === "continue" && team === "END TURN") {
+      // Handle as an end turn vote
+      action = "end_turn";
+      team = game.currentTurn === "red_turn" ? "red" : "blue";
+      
+      toast({
+        title: "End turn vote",
+        description: "You voted to end your turn",
+      });
+    }
+    
+    // Prevent duplicate meta voting
+    const actionKey = `${team}-${action}`;
+    let alreadyVoted = false;
+    
+    setVotedOnMeta(prev => {
+      if (!prev[actionKey]) {
+        prev[actionKey] = new Set(['human']);
+      } else {
+        // Check if this human already voted
+        if (prev[actionKey].has('human')) {
+          alreadyVoted = true;
+          return prev;
+        }
+        
+        // Add this vote
+        prev[actionKey].add('human');
+      }
+      return { ...prev };
+    });
+    
+    if (alreadyVoted) {
+      toast({
+        title: "Already voted",
+        description: "You've already voted on this action",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    // Create vote payload
+    const vote = {
+      model: "human", 
+      team,
+      action
+    };
+    
+    // Immediate UI feedback for normal votes
+    if (team !== "CONTINUE" && team !== "END TURN") {
+      toast({
+        title: "Vote submitted",
+        description: `You voted to ${action.replace('_', ' ')}`,
+      });
+    }
+    
+    // Add the vote message to the discussion
+    const voteMessage = {
+      team,
+      player: 'human',
+      message: `Voted: ${action === "continue" ? "Continue guessing" : "End turn"}`,
+      timestamp: Date.now(),
+      isVoting: true,
+      voteType: action
+    };
+    
+    setLocalDiscussion(prev => [...prev, voteMessage]);
+    
+    // Send the discussion message via WebSocket
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        ...voteMessage,
+        type: 'discussion',
+        gameId: Number(game.id)
+      }));
+    }
+    
+    // Send the vote via API
+    fetch(`/api/games/${game.id}/meta/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(vote)
+    })
+    .then(response => response.json())
+    .then(data => {
+      console.log("Meta vote submitted:", data);
+      
+      // If an action was taken as a result of the vote (e.g., turn ended)
+      if (data.action === 'turn_ended') {
+        console.log("Turn ended as a result of vote");
+        
+        // Use our consistent turn change handler
+        handleTurnChange('vote');
+      } else if (data.action === 'continuing' && action === 'continue') {
+        console.log("Team voted to continue guessing");
+        
+        // Add a message confirming continuation
+        const confirmMessage = {
+          team,
+          player: 'Game',
+          message: `Team has decided to continue guessing!`,
+          timestamp: Date.now(),
+          isVoting: false
+        };
+        
+        setLocalDiscussion(prev => [...prev, confirmMessage]);
+        
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            ...confirmMessage,
+            type: 'discussion',
+            gameId: Number(game.id)
+          }));
+        }
+        
+        // Scan for high-confidence words to auto-guess
+        const filteredWords = Object.entries(wordVoteCounts)
+          .filter(([word, info]) => {
+            // Must meet threshold AND not be already revealed
+            return info.count >= info.threshold && 
+                  !game.revealedCards.includes(word);
+          })
+          .sort((a, b) => b[1].count - a[1].count);
+        
+        if (filteredWords.length > 0) {
+          console.log(`Found ${filteredWords.length} high confidence words to guess: ${filteredWords.map(w => w[0]).join(', ')}`);
+          
+          // Take the highest confidence word
+          const wordToGuess = filteredWords[0][0];
+          
+          // Announce the automatic guess
+          toast({
+            title: "Auto-guessing",
+            description: `Based on team vote, guessing: ${wordToGuess}`,
+          });
+          
+          // Add message about auto-guess
+          const autoGuessMsg = {
+            team,
+            player: 'Game',
+            message: `Auto-guessing highest confidence word: ${wordToGuess}`,
+            timestamp: Date.now() + 1,
+            suggestedWords: [wordToGuess],
+            confidences: [0.9]
+          };
+          
+          setLocalDiscussion(prev => [...prev, autoGuessMsg]);
+          
+          // Make the guess after a short delay
+          setTimeout(() => {
+            if (!game.revealedCards.includes(wordToGuess)) {
+              makeGuess.mutate(wordToGuess);
+            }
+          }, 1500);
+        } else {
+          // No high confidence words, prompt for a new suggestion
+          const promptMsg = {
+            team,
+            player: 'Game',
+            message: `No high confidence words found. Please suggest a word to guess.`,
+            timestamp: Date.now() + 1
+          };
+          
+          setLocalDiscussion(prev => [...prev, promptMsg]);
+        }
+      }
+      
+      // Force refresh game data
+      queryClient.invalidateQueries({ 
+        queryKey: [`/api/games/${game.id}`],
+        refetchType: 'active' 
+      });
+    })
+    .catch(error => {
+      console.error("Error submitting meta vote:", error);
+      toast({
+        title: "Failed to submit vote",
+        description: "An error occurred while voting",
+        variant: "destructive"
+      });
+    });
+  };
+
+  // Add this useEffect to sync game.teamDiscussion with our local state
+  useEffect(() => {
+    if (game?.teamDiscussion) {
+      setLocalDiscussion(game.teamDiscussion);
+    }
+  }, [game?.teamDiscussion]);
+
   // IMPORTANT: After all hooks are defined, then do conditional rendering
   if (isLoading) {
     return (
@@ -890,7 +2866,7 @@ export default function GamePage() {
   }
 
   if (isError || !game) {
-            return (
+    return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="text-xl text-red-500">Error loading game</div>
@@ -909,9 +2885,32 @@ export default function GamePage() {
   const capitalizedTeam = isRedTurn ? "Red" : "Blue";
   const isSpymasterAI = spymaster !== "human";
 
+  // Add an initial hard reset component to clear everything on mount
+  const InitialReset = () => {
+    const [didReset, setDidReset] = useState(false);
+    
+    useEffect(() => {
+      if (didReset) return;
+      
+      console.log("🧹 Hard reset of game UI on initial component mount");
+      
+      // Clear all local state
+      setLocalDiscussion([]);
+      setVotedOnWords({});
+      setVotedOnMeta({});
+      setWordVoteCounts({});
+      setDisplayedPolls(new Set<string>());
+      
+      setDidReset(true);
+    }, [didReset]);
+    
+    return null; // Render nothing, just perform the effect
+  };
+
   // Main component render
   return (
     <div className="min-h-screen bg-neutral-50 p-4">
+      <InitialReset />
       <div className="mb-6 text-center">
         <h1 className="text-3xl font-bold mb-3">Codenames AI</h1>
 
@@ -952,9 +2951,17 @@ export default function GamePage() {
               key={word}
                 className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105 h-40 flex items-center justify-center shadow-md`}
               onClick={() => {
+                  console.log(`📌 Card clicked: ${word}`);
                   if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
-                  makeGuess.mutate(word);
-                }
+                    console.log(`🎮 Making guess for word: ${word}`);
+                    makeGuess.mutate(word);
+                  } else {
+                    console.log(`⚠️ Card click ignored: ${
+                      game.revealedCards.includes(word) ? 'already revealed' :
+                      game.gameState?.includes("win") ? 'game already won' :
+                      aiTurnInProgress.current ? 'AI turn in progress' : 'unknown reason'
+                    }`);
+                  }
               }}
             >
                 <CardContent className="p-8 text-center flex items-center justify-center h-full w-full">

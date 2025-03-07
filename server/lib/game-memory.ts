@@ -342,7 +342,47 @@ export function updateDiscussionMemory(
   revealedCards: string[],
   currentRound: number
 ): void {
-  const memory = getTeamMemory(gameId, team);
+  // Add defensive checks
+  if (typeof team !== 'string') {
+    console.error("Invalid team parameter:", team);
+    team = 'red'; // Default to red if invalid
+  }
+  
+  // Ensure clue has required properties
+  if (!clue || typeof clue !== 'object') {
+    console.error("Invalid clue parameter:", clue);
+    clue = { word: "", number: 0 }; // Default empty clue
+  }
+  
+  // Ensure we have valid arrays
+  teamDiscussion = Array.isArray(teamDiscussion) ? teamDiscussion : [];
+  gameHistory = Array.isArray(gameHistory) ? gameHistory : [];
+  revealedCards = Array.isArray(revealedCards) ? revealedCards : [];
+  
+  // Get team memory, creating it if it doesn't exist
+  const memory = getTeamMemory(gameId, team as "red" | "blue");
+  const opposingMemory = getTeamMemory(gameId, team === "red" ? "blue" : "red");
+  
+  if (!memory) {
+    console.error(`Cannot find team memory for ${team}`);
+    return;
+  }
+  
+  // Ensure all required Maps exist
+  if (!memory.activeClues) {
+    memory.activeClues = new Map();
+  }
+  
+  if (!memory.wordAssociations) {
+    memory.wordAssociations = new Map();
+  }
+  
+  if (!memory.agentPersonalities) {
+    memory.agentPersonalities = new Map();
+  }
+  
+  // Rest of function can now safely access these properties
+  
   const clueKey = `${clue.word} (${clue.number})`;
   const now = Date.now();
   
