@@ -2227,7 +2227,7 @@ export default function GamePage() {
     console.log(`📊 All messages: ${teamDiscussion.length}, With suggestions: ${suggestionMessages.length}, With voting: ${votingMessages.length}`);
     
     return (
-      <Card className="h-[400px] overflow-hidden flex flex-col">
+      <Card className="h-[calc(100vh-15rem)] overflow-hidden flex flex-col">
         <CardContent className={`flex-1 p-4 flex flex-col h-full bg-${teamColor}-50/30`}>
           <div className="flex justify-between items-center mb-4">
             <h3 className={`font-bold text-lg text-${teamColor}-700`}>
@@ -2246,8 +2246,8 @@ export default function GamePage() {
             Messages: {teamDiscussion.length} total, {suggestionMessages.length} with suggestions, {votingMessages.length} with voting
           </div>
           
-          {/* Chat messages in a simple chronological list */}
-          <ScrollArea className="pr-4 flex-1">
+          {/* Make the scroll area take remaining height */}
+          <ScrollArea className="pr-4 flex-1 h-full">
             <div className="space-y-4 pb-4" ref={scrollAreaRef}>
               {teamDiscussion.length === 0 && (
                 <div className="text-center p-4 text-gray-500">No discussion messages yet</div>
@@ -2711,7 +2711,7 @@ export default function GamePage() {
     }
 
     return (
-      <ScrollArea className="h-[400px]">
+      <ScrollArea className="h-[calc(100vh-15rem)]">
         <div className="space-y-2 p-2">
           {filteredLog.slice().reverse().map((entry, i) => {
             const isRed = entry.team === "red";
@@ -3090,15 +3090,25 @@ export default function GamePage() {
         </div>
       </div>
 
-      {/* Update layout with even more space for the game board */}
-      <div className="max-w-[1900px] mx-auto grid grid-cols-1 lg:grid-cols-7 gap-6">
-        {/* Larger game board taking 5 columns */}
+      {/* Change to new layout (log on left, game board in middle, discussion on right) */}
+      <div className="max-w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[calc(100vh-12rem)]">
+        {/* Left sidebar - Game Log */}
+        <div className="lg:col-span-3">
+          <Card className="h-full">
+            <CardContent className="p-4">
+              <h3 className="font-bold text-lg mb-4">Game Log</h3>
+              {renderGameLog()}
+            </CardContent>
+          </Card>
+        </div>
+        
+        {/* Middle - Game board */}
         <div className="lg:col-span-5">
           <div className="grid grid-cols-5 gap-5">
           {game.words.map((word) => (
             <Card
               key={word}
-                className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105 h-40 flex items-center justify-center shadow-md`}
+              className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105 h-40 flex items-center justify-center shadow-md`}
               onClick={() => {
                   console.log(`📌 Card clicked: ${word}`);
                   if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
@@ -3123,15 +3133,9 @@ export default function GamePage() {
           </div>
         </div>
 
-        {/* Sidebar for discussion and log taking 2 columns */}
-        <div className="lg:col-span-2 space-y-6">
+        {/* Right sidebar - Team Discussion */}
+        <div className="lg:col-span-4">
           {renderTeamDiscussion()}
-          <Card>
-            <CardContent className="p-4">
-              <h3 className="font-bold text-lg mb-4">Game Log</h3>
-              {renderGameLog()}
-            </CardContent>
-          </Card>
         </div>
       </div>
 

@@ -187,7 +187,7 @@ export function GameBoard({ game, team, onGuess, onVote, ...props }: GameBoardPr
       {/* Left sidebar - Game Log */}
       <div className="col-span-2 bg-muted rounded-lg p-4">
         <h2 className="font-semibold mb-4">Game Log</h2>
-        <ScrollArea className="h-[calc(100vh-8rem)]">
+        <ScrollArea className="h-[calc(100vh-10rem)]">
           {game.gameHistory?.map((entry: any, i: number) => (
             <div key={i} className="mb-2">
               <p className="text-sm text-muted-foreground">
@@ -241,7 +241,7 @@ export function GameBoard({ game, team, onGuess, onVote, ...props }: GameBoardPr
       {/* Right sidebar - Team Chat */}
       <div className="col-span-3 bg-muted rounded-lg p-4">
         <h2 className="font-semibold mb-4">Team Discussion</h2>
-        <ScrollArea className="h-[calc(100vh-12rem)]">
+        <ScrollArea className="h-[calc(100vh-10rem)]">
           {game.teamDiscussion?.map((msg: any, i: number) => (
             <div key={i} className={cn(
               "mb-4 p-2 rounded",
