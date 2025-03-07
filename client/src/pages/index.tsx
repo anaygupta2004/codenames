@@ -8,16 +8,16 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 import { useLocation } from "wouter"
-import { SiOpenai, SiAnthropic, SiGooglegemini, SiX } from "react-icons/si"
+import { apiRequest } from "@/lib/queryClient"
+import { SiOpenai, SiAnthropic, SiGooglegemini } from "react-icons/si"
 import { Bot } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
-import { createInitialGame } from "@/lib/game"
 
-// AI models available in the game
+// AI models available in the game - integrate with your existing models
 const AI_MODELS = [
   { id: "gpt-4o", name: "GPT-4o", icon: SiOpenai, type: "advanced" },
   { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5", icon: SiAnthropic, type: "advanced" },
-  { id: "grok-2-1212", name: "Grok 2", icon: SiX, type: "advanced" },
+  { id: "grok-2-1212", name: "Grok 2", icon: Bot, type: "advanced" },
   { id: "gemini-1.5-pro", name: "Gemini Pro", icon: SiGooglegemini, type: "advanced" },
   { id: "human-player", name: "Human Player", icon: "👤", type: "human" },
 ]
@@ -111,40 +111,26 @@ export default function HomePage() {
       { name: "Select Model", icon: "❓", type: "unknown" }
   }
 
-  // Render model icon based on ID
-  const renderModelIcon = (modelId: string) => {
-    const model = getModelById(modelId);
-    const IconComponent = model.icon;
-    
-    if (typeof IconComponent === "string") {
-      return <span>{IconComponent}</span>;
-    }
-    
-    return <IconComponent className="h-5 w-5" />;
-  };
-
   // Start a new game
   const startGame = async () => {
     setLoading(true);
     
     try {
-      // Convert team data to the format expected by createInitialGame
+      // Convert team data to the format expected by your API
       const redTeam = teams[0].members;
       const blueTeam = teams[1].members;
       
-      // Format team configurations as arrays
-      const redTeamConfig = [
-        redTeam.find(m => m.role === "Spymaster")?.modelId || "gpt-4o",
-        ...redTeam.filter(m => m.role.includes("Operative")).map(m => m.modelId)
-      ];
-      
-      const blueTeamConfig = [
-        blueTeam.find(m => m.role === "Spymaster")?.modelId || "claude-3-5-sonnet-20241022",
-        ...blueTeam.filter(m => m.role.includes("Operative")).map(m => m.modelId)
-      ];
-      
-      // Call with the correct parameters - two separate arrays
-      const gameData = createInitialGame(redTeamConfig, blueTeamConfig);
+      // Create a proper game initialization - the server expects the full game structure
+      const gameData = {
+        // AI players setup
+        redSpymaster: redTeam.find(m => m.role === "Spymaster")?.modelId || "gpt-4o",
+        redPlayers: redTeam.filter(m => m.role.includes("Operative")).map(m => m.modelId),
+        blueSpymaster: blueTeam.find(m => m.role === "Spymaster")?.modelId || "claude-3-5-sonnet-20241022",
+        bluePlayers: blueTeam.filter(m => m.role.includes("Operative")).map(m => m.modelId),
+        
+        // These fields are required by the server as shown in the error message
+        createInitialBoard: true  // This flag tells the server to create the initial board
+      };
       
       console.log("Creating game with data:", gameData);
       
@@ -179,6 +165,22 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Render model icon dynamically
+  const renderModelIcon = (modelId: string) => {
+    const model = getModelById(modelId);
+    
+    if (modelId === "human-player") {
+      return <span className="text-lg">👤</span>;
+    }
+    
+    const IconComponent = model.icon;
+    if (typeof IconComponent === "string") {
+      return <span>{IconComponent}</span>;
+    }
+    
+    return <IconComponent className="h-5 w-5" />;
   };
 
   return (
@@ -303,4 +305,4 @@ export default function HomePage() {
       <p className="text-white/70 text-sm mt-4">Choose your team composition and AI models to begin</p>
     </div>
   )
-}
+} 
