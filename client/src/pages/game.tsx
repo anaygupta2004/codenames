@@ -55,6 +55,34 @@ const WordPoll = ({
   const yesPercentage = totalVotes === 0 ? 0 : Math.round((votes.yes.length / totalVotes) * 100);
   const noPercentage = totalVotes === 0 ? 0 : Math.round((votes.no.length / totalVotes) * 100);
   
+  // Check if this word has already been revealed
+  const isRevealed = game?.revealedCards?.includes(word);
+  
+  // If the word is already revealed, show a disabled/revealed state
+  if (isRevealed) {
+    return (
+      <Card className={`w-full mb-4 shadow-md border border-gray-300 overflow-hidden opacity-60`}>
+        <CardHeader className={`bg-gray-100 pb-2`}>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg font-medium text-gray-500">Already Revealed</CardTitle>
+            <span className="text-sm text-muted-foreground">Card revealed</span>
+          </div>
+          <CardDescription>This word has already been guessed</CardDescription>
+        </CardHeader>
+        <CardContent className="pt-4">
+          <div className="text-xl font-bold text-center mb-5 py-2 px-4 bg-white rounded-md border inline-block mx-auto text-gray-400 line-through">
+            {word}
+          </div>
+          
+          <div className="flex items-center justify-center mt-2 text-gray-500 italic">
+            <span>This card is already on the board</span>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  // Normal display for unrevealed words
   return (
     <Card className={`w-full mb-4 shadow-md border border-${teamColor}-200 overflow-hidden`}>
       <CardHeader className={`bg-${teamColor}-50 pb-2`}>
@@ -965,22 +993,35 @@ export default function GamePage() {
         }));
       }
       
-      // ALWAYS create a meta-vote decision after EVERY guess
+      // ALWAYS create a meta-vote decision after EVERY correct guess
       if (result === "correct") {
+        console.log("✅ CORRECT GUESS - INITIATING META DECISION FLOW");
+        
+        // IMMEDIATELY set voting state to true for UI rendering
+        setIsVotingActive(true);
+        setVotingInProgress(true);
+        
+        // Add a meta decision entry with explicit voting flags
+        const metaDecisionMsg = {
+          team: currentTeam,
+          player: 'Game',
+          message: "Team must decide: continue guessing or end turn?",
+          timestamp: Date.now(),
+          isVoting: true, // CRITICAL: Mark as voting message
+          voteType: 'meta_decision',
+          metaOptions: ['continue', 'end_turn']
+        };
+        
+        // Add to local discussion IMMEDIATELY
+        setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
+        
+        // REDUNDANCY: Create a timeout to ensure the meta decision appears
         setTimeout(() => {
-          // Add a meta decision entry with explicit voting flags
-          const metaDecisionMsg = {
-            team: currentTeam,
-            player: 'Game',
-            message: "Team must decide: continue guessing or end turn?",
-            timestamp: Date.now(),
-            isVoting: true, // CRITICAL: Mark as voting message
-            voteType: 'meta_decision',
-            metaOptions: ['continue', 'end_turn']
-          };
+          console.log("🔄 META DECISION REDUNDANCY CHECK");
           
-          // Add to local discussion
-          setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
+          // Double check that voting state is set
+          setIsVotingActive(true);
+          setVotingInProgress(true);
           
           // Send via WebSocket for real-time updates
           if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -1002,8 +1043,11 @@ export default function GamePage() {
             })
           }).catch(err => console.error("Error triggering AI meta vote:", err));
           
-          // Flag for UI to show voting
-          setIsVotingActive(true);
+          // Force refresh game data to ensure UI updates
+          queryClient.invalidateQueries({ 
+            queryKey: [`/api/games/${id}`],
+            refetchType: 'active'
+          });
         }, 500);
       }
       
@@ -1612,17 +1656,103 @@ export default function GamePage() {
     return game.revealedCards.includes(word) ? "text-white" : "text-gray-900";
   };
 
-  // Add this effect to detect voting activity
+  // ENHANCED: Much more aggressive detection of voting activity with auto-creation of meta decisions
   useEffect(() => {
     if (!game) return;
 
-    const recentMessages = game.teamDiscussion?.slice(-5) || [];
-    const hasRecentVote = recentMessages.some(entry => 
-      entry.isVoting || entry.voteType || entry.action === "vote"
+    // Check a larger window of recent messages for voting activity
+    const recentMessages = game.teamDiscussion?.slice(-10) || [];
+    
+    // Look for ANY indicators that voting should be active
+    const hasVotingMessages = recentMessages.some(entry => 
+      entry.isVoting === true || 
+      entry.voteType || 
+      entry.action === "vote" ||
+      entry.metaOptions ||
+      (entry.message && entry.message.includes("continue guessing or end turn"))
     );
     
-    setIsVotingActive(hasRecentVote);
-  }, [game?.teamDiscussion]);
+    // CRITICAL: Check for recent correct guesses without explicit voting
+    const correctGuessMessages = recentMessages.filter(entry => 
+      entry.player === 'Game' && 
+      entry.message?.includes('Guessed:') && 
+      !entry.message?.includes('wrong') &&
+      !entry.message?.includes('neutral') &&
+      !entry.message?.includes('opponent') &&
+      !entry.message?.includes('assassin')
+    );
+    
+    const hasCorrectGuess = correctGuessMessages.length > 0;
+    
+    // Find the most recent correct guess
+    let mostRecentCorrectGuess = null;
+    if (hasCorrectGuess) {
+      mostRecentCorrectGuess = correctGuessMessages[correctGuessMessages.length - 1];
+    }
+    
+    console.log(`🔍 Voting detection check: hasVotingMessages=${hasVotingMessages}, hasCorrectGuess=${hasCorrectGuess}`);
+    
+    // If we have voting messages OR a recent correct guess, set voting active
+    if (hasVotingMessages || hasCorrectGuess) {
+      setIsVotingActive(true);
+      setVotingInProgress(true);
+      console.log(`✅ Voting state ACTIVATED`);
+      
+      // If we have a correct guess but no meta decision message after it, create one
+      if (hasCorrectGuess && !hasVotingMessages && mostRecentCorrectGuess) {
+        // Get timestamp of most recent correct guess
+        const guessTimestamp = mostRecentCorrectGuess.timestamp || 0;
+        
+        // Check if any meta decision exists after this guess
+        const hasMetaDecisionAfterGuess = recentMessages.some(entry => 
+          entry.isVoting === true && 
+          entry.voteType === 'meta_decision' && 
+          entry.timestamp > guessTimestamp
+        );
+        
+        if (!hasMetaDecisionAfterGuess) {
+          console.log(`🚨 CORRECT GUESS WITHOUT META DECISION DETECTED - CREATING ONE`);
+          
+          // Get current team
+          const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+          
+          // Create meta decision message
+          const metaDecisionMsg = {
+            team: currentTeam,
+            player: 'Game',
+            message: "Team must decide: continue guessing or end turn?",
+            timestamp: Date.now(),
+            isVoting: true,
+            voteType: 'meta_decision',
+            metaOptions: ['continue', 'end_turn']
+          };
+          
+          // Add to local discussion immediately
+          setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
+          
+          // Send to server to ensure AI models vote on it
+          fetch(`/api/games/${game.id}/meta/discuss`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: "Should we continue guessing or end turn?",
+              team: currentTeam,
+              triggerVoting: true,
+              isVoting: true,
+              voteType: 'meta_decision',
+              forceMeta: true
+            })
+          }).catch(err => console.error("Error creating meta decision:", err));
+          
+          // Force refresh game data
+          queryClient.invalidateQueries({ 
+            queryKey: [`/api/games/${game.id}`],
+            refetchType: 'active'
+          });
+        }
+      }
+    }
+  }, [game?.teamDiscussion, game?.id, game?.currentTurn]);
 
   // Add this useEffect to auto-scroll to the bottom whenever messages change
   useEffect(() => {
@@ -2496,8 +2626,11 @@ export default function GamePage() {
             {hasSuggestions && entry.suggestedWords && entry.suggestedWords.length > 0 && !entry.suggestedWords.includes("CONTINUE") && !entry.suggestedWords.includes("END TURN") && (
               <div className="mt-2 flex flex-wrap gap-1">
                 {entry.suggestedWords.map((word, idx) => {
-                  // Skip meta voting options and already revealed words
-                  if (word === "CONTINUE" || word === "END TURN" || (game?.revealedCards || []).includes(word)) return null;
+                  // Check if this word has already been revealed
+                  const isRevealed = (game?.revealedCards || []).includes(word);
+                  
+                  // Skip meta voting options
+                  if (word === "CONTINUE" || word === "END TURN") return null;
                   
                   // Get confidence for this word
                   const wordConfidence = entry.confidences && idx < entry.confidences.length ? 
@@ -2507,6 +2640,22 @@ export default function GamePage() {
                   const hasVotes = wordVoteCounts[word] && wordVoteCounts[word].count > 0;
                   const humanHasVoted = votedOnWords[word]?.has('human');
                   
+                  // For revealed words, show a faded "already guessed" button
+                  if (isRevealed) {
+                    return (
+                      <div
+                        key={`word-btn-revealed-${word}-${idx}`}
+                        className="text-xs py-1 px-2 h-auto bg-gray-100 border border-gray-300 rounded text-gray-400 line-through opacity-60 flex items-center"
+                      >
+                        {word}
+                        <span className="ml-1 text-[10px] bg-gray-200 text-gray-500 px-1 rounded">
+                          guessed
+                        </span>
+                      </div>
+                    );
+                  }
+                  
+                  // For normal unrevealed words, show clickable buttons
                   return (
                     <Button
                       key={`word-btn-${word}-${idx}`}

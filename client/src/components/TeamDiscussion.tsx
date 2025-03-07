@@ -1,6 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import type { TeamDiscussionEntry, ConsensusVote } from '@shared/schema';
 
+// Helper function for proper markdown-style text formatting
+const formatMessage = (text: string) => {
+  if (!text) return '';
+  
+  // Process markdown in specific order to avoid nested conflicts
+  return text
+    // Bold: **text**
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    // Italic: *text*
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    // Underline: __text__
+    .replace(/__(.*?)__/g, '<u>$1</u>')
+    // Strikethrough: ~~text~~
+    .replace(/~~(.*?)~~/g, '<s>$1</s>');
+};
+
 // Add keyframe animation for pulse effect
 const pulseAnimation = `
 @keyframes pulse {
@@ -275,13 +291,24 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
             return prev;
           });
           
-          // Also update word votes to remove the guessed word
+          // Completely remove the guessed word from votes and UI
           setWordVotes(prev => {
             const newVotes = {...prev};
-            // Remove the guessed word from votes
+            // Aggressively remove the guessed word from votes
             if (newVotes[data.word]) {
+              console.log(`🗑️ Removing voted word "${data.word}" since it was guessed`);
               delete newVotes[data.word];
             }
+            
+            // Also clean up any other revealed words that might still have votes
+            const currentRevealedCards = [...revealedCards, data.word];
+            Object.keys(newVotes).forEach(word => {
+              if (currentRevealedCards.includes(word)) {
+                console.log(`🧹 Cleaning up already revealed word "${word}" from votes`);
+                delete newVotes[word];
+              }
+            });
+            
             return newVotes;
           });
           
@@ -361,7 +388,34 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
   }, [gameId]);
 
   // Enhanced word voting with automatic voting for high-confidence suggestions
+  // and with checks for already revealed words
   const handleWordVote = async (word: string, team: string) => {
+    // First check if the word has already been revealed
+    if (revealedCards.includes(word)) {
+      console.log(`⚠️ Cannot vote for already revealed word: "${word}"`);
+      
+      // Display a message that this word has already been guessed
+      const alreadyGuessedMsg = {
+        team,
+        player: 'Game',
+        message: `"${word}" has already been guessed. Please suggest a different word.`,
+        timestamp: Date.now()
+      };
+      
+      // Add feedback message to discussion
+      fetch(`/api/games/${gameId}/meta/discuss`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: `"${word}" has already been guessed. Please suggest a different word.`,
+          team,
+          triggerVoting: false
+        })
+      }).catch(err => console.error("Error sending already guessed message:", err));
+      
+      return;
+    }
+    
     // Check if we have a custom vote handler from parent component
     if (onVote) {
       console.log(`🗳️ Using provided vote handler for "${word}" on team ${team}`);
@@ -449,7 +503,9 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
     fetch(`/api/games/${gameId}`)
       .then(res => res.json())
       .then(game => {
-        const revealedCards = game?.revealedCards || [];
+        // Update our revealed cards state with the latest data from the server
+        const serverRevealedCards = game?.revealedCards || [];
+        setRevealedCards(serverRevealedCards);
         
         // Process messages to find high-confidence suggestions  
         recentMessages.forEach(msg => {
@@ -461,7 +517,7 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
           // Check for high confidence suggestions
           msg.suggestedWords.forEach((word, idx) => {
             // Skip already revealed cards
-            if (revealedCards.includes(word)) {
+            if (serverRevealedCards.includes(word)) {
               console.log(`⚠️ Skipping already revealed card: ${word}`);
               return;
             }
@@ -477,8 +533,13 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
               
               // Use a small timeout to not spam the voting API
               setTimeout(() => {
-                handleWordVote(word, team);
-                autoVotedWords.add(word);
+                // Check once more that the word hasn't been revealed since we started
+                if (!serverRevealedCards.includes(word)) {
+                  handleWordVote(word, team);
+                  autoVotedWords.add(word);
+                } else {
+                  console.log(`⚠️ Cancelling auto-vote - word was just revealed: ${word}`);
+                }
               }, 500 * autoVotedWords.size); // Stagger auto-votes
             }
           });
@@ -510,52 +571,71 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
       !msg.message?.includes('opponent')
     );
     
-    // Force a meta decision after EVERY correct guess if no voting message exists
-    if (guessMessages.length > 0 && votingMessages.length === 0) {
-      console.log('🎮 Detected correct guess without meta decision - creating one');
+    // More aggressive detection of correct guesses requiring meta decisions
+    // This finds guesses that don't have "wrong" or similar words, meaning they were correct
+    const correctGuessMessages = recentMessages.filter(msg => 
+      msg.player === 'Game' && 
+      msg.message?.includes('Guessed:') && 
+      !msg.message?.includes('wrong') && 
+      !msg.message?.includes('neutral') && 
+      !msg.message?.includes('opponent') &&
+      !msg.message?.includes('assassin')
+    );
+    
+    // Check if we have any correct guesses in the recent messages
+    if (correctGuessMessages.length > 0) {
+      // Check if we already have a meta decision message after this guess
+      const lastCorrectGuessTime = correctGuessMessages[correctGuessMessages.length - 1].timestamp || 0;
       
-      // Create meta decision message with Among Us style UI
-      const metaDecisionMsg = {
-        team,
-        player: 'Game',
-        message: "Team must decide: continue guessing or end turn?",
-        isVoting: true,
-        voteType: 'meta_decision',
-        timestamp: Date.now(),
-        metaOptions: ['continue', 'end_turn'] // Allow UI to render the options
-      };
+      // Find any meta decision that came AFTER this correct guess
+      const hasMetaDecisionAfterGuess = messages.some(msg => 
+        msg.isVoting && 
+        msg.voteType === 'meta_decision' && 
+        msg.timestamp > lastCorrectGuessTime
+      );
       
-      // Send via WebSocket for real-time updates
-      if (onVote) {
-        // Send the discussion message via WebSocket
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-        const ws = new WebSocket(wsUrl);
+      console.log(`🎮 Found correct guess at timestamp ${lastCorrectGuessTime}, hasMetaDecision: ${hasMetaDecisionAfterGuess}`);
+      
+      // If no meta decision exists after the most recent correct guess, create one
+      if (!hasMetaDecisionAfterGuess) {
+        console.log('🎮 Creating meta decision for correct guess - VOTING REQUIRED');
         
-        ws.onopen = () => {
-          ws.send(JSON.stringify({
-            ...metaDecisionMsg,
-            type: 'discussion',
-            gameId: Number(gameId)
-          }));
-          ws.close(); // Close after sending
+        // Create meta decision message with Among Us style UI
+        const metaDecisionMsg = {
+          team,
+          player: 'Game',
+          message: "Team must decide: continue guessing or end turn?",
+          isVoting: true,
+          voteType: 'meta_decision',
+          timestamp: Date.now(),
+          metaOptions: ['continue', 'end_turn'] // Allow UI to render the options
         };
+        
+        // Send via WebSocket for real-time updates - use a MORE RELIABLE approach
+        if (gameId) {
+          try {
+            // Use fetch API to send a POST to /meta/discuss endpoint - more reliable than opening a new WebSocket
+            fetch(`/api/games/${gameId}/meta/discuss`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                message: "Team must decide: continue guessing or end turn?",
+                team,
+                triggerVoting: true,
+                isVoting: true,
+                voteType: 'meta_decision',
+                forceMeta: true // Signal this is a forced meta decision
+              })
+            }).catch(err => console.error("Error triggering meta vote:", err));
+            
+            console.log("✅ Successfully created meta decision for correct guess");
+          } catch (err) {
+            console.error("Failed to create meta decision:", err);
+          }
+        }
+        
+        return;
       }
-      
-      // Also send a meta vote request to trigger server-side decision process
-      setTimeout(() => {
-        fetch(`/api/games/${gameId}/meta/discuss`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: "Should we continue guessing or end turn?",
-            team,
-            triggerVoting: true
-          })
-        }).catch(err => console.error("Error triggering meta vote:", err));
-      }, 500);
-      
-      return;
     }
     
     if (votingMessages.length === 0) return;
@@ -616,9 +696,69 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
     }
   }, [messages, team, gameId, onVote]);
 
-  // Handle voting for meta decisions (continue/end turn)
+  // ENHANCED: Handle meta voting with special fast path for ending turns
   const handleMetaVote = async (action: 'continue' | 'end_turn' | 'discuss_more', team: string) => {
     console.log(`🗳️ Submitting meta vote for action: "${action}" for team ${team}`);
+    
+    // Special fast path for end_turn votes to ensure immediate turn change
+    if (action === 'end_turn') {
+      console.log(`🔄 Fast path: Ending turn via direct meta vote`);
+      
+      // Create high-priority end turn vote
+      try {
+        // First create a UI message to show the end turn vote
+        const endTurnMsg = {
+          team,
+          player: 'human',
+          message: `Voted to end turn`,
+          timestamp: Date.now(),
+          isVoting: true,
+          voteType: 'end_turn'
+        };
+        
+        // Use fetch for more reliable API call
+        fetch(`/api/games/${gameId}/meta/vote`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            model: 'human',
+            team,
+            action: 'end_turn',
+            highPriority: true, // Signal this is a high-priority vote
+            forceTurnChange: true // Explicitly request turn change
+          })
+        }).catch(err => console.error("Error submitting fast-path end turn vote:", err));
+        
+        // Also create multiple Game vote records to ensure threshold is met
+        fetch(`/api/games/${gameId}/meta/vote`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            model: 'Game',
+            team,
+            action: 'end_turn',
+            highPriority: true, // Signal this is a high-priority vote
+            forceTurnChange: true // Explicitly request turn change
+          })
+        }).catch(err => console.error("Error submitting system end turn vote:", err));
+        
+        // Update local state immediately for responsive UI
+        setMetaVotes({
+          action: 'end_turn',
+          votes: metaVotes.votes + 1,
+          voters: [...(metaVotes.voters || []), { player: 'human', confidence: 0.9 }],
+          percentage: 100 // Force to 100% to show full progress
+        });
+        
+        // Return without waiting for response for faster UI update
+        return;
+      } catch (error) {
+        console.error("Error in fast-path end turn vote:", error);
+        // Fall through to normal path if fast path fails
+      }
+    }
+    
+    // Normal path for continue votes or fallback for end_turn
     try {
       const response = await fetch(`/api/games/${gameId}/meta/vote`, {
         method: 'POST',
@@ -792,7 +932,12 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
               }}>
                 {msg.player}
               </span>
-              <span>{msg.message}</span>
+              <span 
+                style={{ whiteSpace: 'pre-wrap' }}
+                dangerouslySetInnerHTML={{ 
+                  __html: msg.message ? formatMessage(msg.message) : ''
+                }}
+              />
             </div>
             
             {/* Only display word suggestions section if there are suggested words */}
@@ -819,6 +964,13 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                 
                 <div className="word-suggestions-list">
                   {msg.suggestedWords.map((word, idx) => {
+                    // Check if the word has already been revealed
+                    const isRevealed = revealedCards.includes(word);
+                    
+                    // Skip words that are special meta options like "CONTINUE" or "END TURN"
+                    // ALSO skip already revealed words completely from suggestions list
+                    if (word === "CONTINUE" || word === "END TURN" || isRevealed) return null;
+                    
                     // Use the proper confidence for each word if available
                     let wordConfidence = 0.5; // Default confidence
                     
@@ -832,9 +984,27 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                       }
                     }
                     
-                    // Get voting data for this word
+                    // Get voting data for this word - never vote for revealed words
                     const voteData = wordVotes[word];
                     const hasVotes = voteData && voteData.votes > 0;
+                    
+                    // We shouldn't need this section anymore since we're filtering out 
+                    // revealed words completely, but keeping minimal styling just in case
+                    const revealAnimation = {
+                      opacity: 1,
+                      transform: 'scale(1)',
+                      height: 'auto',
+                      overflow: 'hidden',
+                      transition: 'all 0.5s ease-in-out',
+                      position: 'relative'
+                    };
+                    
+                    // Clean styling for words (should never have revealed words displayed)
+                    const textStyle = {
+                      textDecoration: 'none',
+                      color: idx === 0 ? '#0066cc' : '#333',
+                      fontWeight: idx === 0 ? 'bold' : 'normal'
+                    };
                     
                     return (
                       <div key={`word-${word}-${idx}`} style={{ 
@@ -843,8 +1013,12 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                         backgroundColor: idx === 0 ? 'rgba(240, 249, 255, 0.7)' : 'transparent',
                         borderRadius: '4px',
                         border: idx === 0 ? '1px solid #cce5ff' : 'none',
-                        boxShadow: hasVotes && voteData?.percentage > 50 ? '0 0 5px rgba(76, 175, 80, 0.5)' : 'none'
+                        boxShadow: hasVotes && voteData?.percentage > 50 
+                          ? '0 0 5px rgba(76, 175, 80, 0.5)' 
+                          : 'none',
+                        ...revealAnimation
                       }}>
+                        
                         <div style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -854,7 +1028,7 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                           <span style={{
                             fontWeight: 'bold',
                             fontSize: '1.1em',
-                            color: idx === 0 ? '#0066cc' : '#333'
+                            ...textStyle
                           }}>
                             {word.toUpperCase()}
                           </span>
@@ -866,59 +1040,59 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                             fontWeight: 'bold',
                             color: wordConfidence > 0.7 ? '#2e7d32' : wordConfidence > 0.4 ? '#ff8f00' : '#c62828'
                           }}>
-                            Confidence: {Math.round(wordConfidence * 100)}%
+                            {`Confidence: ${Math.round(wordConfidence * 100)}%`}
                           </span>
                         </div>
                         
                         {/* Among Us style voting UI for words */}
                         <div style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          marginTop: '4px',
-                          padding: '4px',
-                          backgroundColor: hasVotes ? 'rgba(76, 175, 80, 0.1)' : 'rgba(0,0,0,0.03)',
-                          borderRadius: '4px',
-                          border: hasVotes ? '1px dashed #c5e1a5' : 'none'
-                        }}>
-                          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                            <span title={msg.player} style={{ marginRight: '4px' }}>{getModelIcon(msg.player)}</span>
-                            
-                            {/* Display real voters */}
-                            {hasVotes && voteData.voters.length > 0 && (
-                              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                                <span style={{ fontSize: '0.85em', color: '#555', marginRight: '4px' }}>+</span>
-                                {voteData.voters.map((voter, vidx) => (
-                                  <span key={vidx} title={voter.player}>
-                                    {getModelIcon(voter.player)}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                            
-                            {/* Display voting percentage if there are votes */}
-                            {hasVotes && (
-                              <span style={{
-                                marginLeft: '8px',
-                                fontSize: '0.85em',
-                                backgroundColor: voteData.percentage > 70 ? '#e8f5e9' : '#f1f8e9',
-                                padding: '2px 6px',
-                                borderRadius: '10px',
-                                border: '1px solid #c5e1a5'
-                              }}>
-                                {voteData.votes} votes ({voteData.percentage}%)
-                              </span>
-                            )}
-                          </div>
-                          {/* No manual vote UI - automatic voting only */}
-                          <div style={{
-                            fontSize: '0.8em',
-                            color: '#558b2f',
-                            padding: '2px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            marginTop: '4px',
+                            padding: '4px',
+                            backgroundColor: hasVotes ? 'rgba(76, 175, 80, 0.1)' : 'rgba(0,0,0,0.03)',
+                            borderRadius: '4px',
+                            border: hasVotes ? '1px dashed #c5e1a5' : 'none'
                           }}>
-                            {wordConfidence > 0.7 ? "Auto-voting" : ""}
+                            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                              <span title={msg.player} style={{ marginRight: '4px' }}>{getModelIcon(msg.player)}</span>
+                              
+                              {/* Display real voters */}
+                              {hasVotes && voteData.voters.length > 0 && (
+                                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                  <span style={{ fontSize: '0.85em', color: '#555', marginRight: '4px' }}>+</span>
+                                  {voteData.voters.map((voter, vidx) => (
+                                    <span key={vidx} title={voter.player}>
+                                      {getModelIcon(voter.player)}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              
+                              {/* Display voting percentage if there are votes */}
+                              {hasVotes && (
+                                <span style={{
+                                  marginLeft: '8px',
+                                  fontSize: '0.85em',
+                                  backgroundColor: voteData.percentage > 70 ? '#e8f5e9' : '#f1f8e9',
+                                  padding: '2px 6px',
+                                  borderRadius: '10px',
+                                  border: '1px solid #c5e1a5'
+                                }}>
+                                  {voteData.votes} votes ({voteData.percentage}%)
+                                </span>
+                              )}
+                            </div>
+                            {/* No manual vote UI - automatic voting only */}
+                            <div style={{
+                              fontSize: '0.8em',
+                              color: '#558b2f',
+                              padding: '2px 8px',
+                            }}>
+                              {wordConfidence > 0.7 ? "Auto-voting" : ""}
+                            </div>
                           </div>
-                        </div>
                       </div>
                     );
                   })}
@@ -974,13 +1148,49 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     padding: '8px 12px',
-                    backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                    backgroundColor: metaVotes.action === (msg.voteType || 'continue') ? 'rgba(76, 175, 80, 0.3)' : 'rgba(76, 175, 80, 0.1)',
                     borderRadius: '6px',
-                    border: '1px solid rgba(76, 175, 80, 0.3)'
+                    border: metaVotes.action === (msg.voteType || 'continue') ? '3px solid rgba(76, 175, 80, 0.7)' : '1px solid rgba(76, 175, 80, 0.3)',
+                    boxShadow: metaVotes.action === (msg.voteType || 'continue') ? '0 0 10px rgba(76, 175, 80, 0.4)' : 'none',
+                    position: 'relative',
+                    overflow: 'hidden'
                   }}>
+                    {metaVotes.action === (msg.voteType || 'continue') && (
+                      <div style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '8px',
+                        height: '100%',
+                        backgroundColor: '#4CAF50'
+                      }}/>
+                    )}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span style={{ fontSize: '1.2em', fontWeight: 'bold' }}>
+                      <span style={{ 
+                        fontSize: '1.2em', 
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px'
+                      }}>
                         {msg.voteType === 'end_turn' ? '👍 End Turn' : '👍 Continue'}
+                        {metaVotes.action === (msg.voteType || 'continue') && (
+                          <span style={{
+                            fontSize: '0.7em',
+                            backgroundColor: '#4caf50',
+                            color: 'white',
+                            padding: '2px 6px',
+                            borderRadius: '8px',
+                            fontWeight: 'bold',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+                          }}>
+                            <span style={{ fontSize: '0.9em' }}>✓</span>
+                            SELECTED
+                          </span>
+                        )}
                       </span>
                       {/* Model icons who voted for this option */}
                       <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
@@ -1057,13 +1267,49 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     padding: '8px 12px',
-                    backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                    backgroundColor: metaVotes.action === (msg.voteType === 'end_turn' ? 'continue' : 'end_turn') ? 'rgba(244, 67, 54, 0.3)' : 'rgba(244, 67, 54, 0.1)',
                     borderRadius: '6px',
-                    border: '1px solid rgba(244, 67, 54, 0.3)'
+                    border: metaVotes.action === (msg.voteType === 'end_turn' ? 'continue' : 'end_turn') ? '3px solid rgba(244, 67, 54, 0.7)' : '1px solid rgba(244, 67, 54, 0.3)',
+                    boxShadow: metaVotes.action === (msg.voteType === 'end_turn' ? 'continue' : 'end_turn') ? '0 0 10px rgba(244, 67, 54, 0.4)' : 'none',
+                    position: 'relative',
+                    overflow: 'hidden'
                   }}>
+                    {metaVotes.action === (msg.voteType === 'end_turn' ? 'continue' : 'end_turn') && (
+                      <div style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '8px',
+                        height: '100%',
+                        backgroundColor: '#F44336'
+                      }}/>
+                    )}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span style={{ fontSize: '1.2em', fontWeight: 'bold' }}>
+                      <span style={{ 
+                        fontSize: '1.2em', 
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px'
+                      }}>
                         {msg.voteType === 'end_turn' ? '👎 Keep Going' : '👎 End Turn'}
+                        {metaVotes.action === (msg.voteType === 'end_turn' ? 'continue' : 'end_turn') && (
+                          <span style={{
+                            fontSize: '0.7em',
+                            backgroundColor: '#f44336',
+                            color: 'white',
+                            padding: '2px 6px',
+                            borderRadius: '8px',
+                            fontWeight: 'bold',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+                          }}>
+                            <span style={{ fontSize: '0.9em' }}>✓</span>
+                            SELECTED
+                          </span>
+                        )}
                       </span>
                       {/* Model icons who voted for this opposite option */}
                       <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
@@ -1122,13 +1368,49 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     padding: '8px 12px',
-                    backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                    backgroundColor: metaVotes.action === 'discuss_more' ? 'rgba(255, 152, 0, 0.3)' : 'rgba(255, 152, 0, 0.1)',
                     borderRadius: '6px',
-                    border: '1px solid rgba(255, 152, 0, 0.3)'
+                    border: metaVotes.action === 'discuss_more' ? '3px solid rgba(255, 152, 0, 0.7)' : '1px solid rgba(255, 152, 0, 0.3)',
+                    boxShadow: metaVotes.action === 'discuss_more' ? '0 0 10px rgba(255, 152, 0, 0.4)' : 'none',
+                    position: 'relative',
+                    overflow: 'hidden'
                   }}>
+                    {metaVotes.action === 'discuss_more' && (
+                      <div style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '8px',
+                        height: '100%',
+                        backgroundColor: '#FF9800'
+                      }}/>
+                    )}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span style={{ fontSize: '1.2em', fontWeight: 'bold' }}>
+                      <span style={{ 
+                        fontSize: '1.2em', 
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px'
+                      }}>
                         🤔 Discuss More
+                        {metaVotes.action === 'discuss_more' && (
+                          <span style={{
+                            fontSize: '0.7em',
+                            backgroundColor: '#ff9800',
+                            color: 'white',
+                            padding: '2px 6px',
+                            borderRadius: '8px',
+                            fontWeight: 'bold',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+                          }}>
+                            <span style={{ fontSize: '0.9em' }}>✓</span>
+                            SELECTED
+                          </span>
+                        )}
                       </span>
                       {/* Model icons who voted for discuss more */}
                       <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
