@@ -1552,6 +1552,115 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Add a new endpoint for meta-voting (continue/end_turn decisions)
+  // New endpoint specifically for meta decisions and discussions
+  app.post("/api/games/:id/meta/discuss", async (req, res) => {
+    try {
+      const gameId = Number(req.params.id);
+      const game = await storage.getGame(gameId);
+      if (!game) return res.status(404).json({ error: "Game not found" });
+
+      const { message, team, triggerVoting, isVoting, voteType, forceMeta } = req.body;
+
+      // Validate team
+      if (!team || (team !== "red" && team !== "blue")) {
+        return res.status(400).json({ error: "Valid team is required" });
+      }
+
+      const teamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
+      const aiTeammates = teamPlayers.filter(p => 
+        p !== "human" && p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
+      ) as AIModel[];
+
+      // Create a system message to prompt discussion or meta decision
+      const discussionEntry = {
+        team,
+        player: 'Game',
+        message: message || "Team must decide: continue guessing or end turn?",
+        timestamp: Date.now(),
+        // Include voting flags if this is a meta decision request
+        isVoting: isVoting === true || forceMeta === true || triggerVoting === true,
+        voteType: voteType || 'meta_decision',
+        // Include meta options if this is a meta decision
+        metaOptions: ['continue', 'end_turn']
+      };
+
+      console.log(`📝 Creating meta discussion: isVoting=${discussionEntry.isVoting}, voteType=${discussionEntry.voteType}`);
+
+      // Add to game discussion log
+      await storage.updateGame(gameId, {
+        teamDiscussion: [...(game.teamDiscussion || []), discussionEntry]
+      });
+
+      // Broadcast to all clients - ensure all message properties are included
+      const gameRoom = gameDiscussions.get(gameId);
+      if (gameRoom) {
+        console.log(`Broadcasting meta decision to ${gameRoom.clients.size} clients`);
+        gameRoom.clients.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: 'discussion',
+              team,
+              player: 'Game',
+              content: discussionEntry.message,
+              message: discussionEntry.message, // Include for compatibility
+              timestamp: discussionEntry.timestamp,
+              isVoting: discussionEntry.isVoting,
+              voteType: discussionEntry.voteType,
+              metaOptions: discussionEntry.metaOptions
+            }));
+          }
+        });
+      }
+
+      // Trigger AI meta-votes if requested
+      if ((triggerVoting || forceMeta) && aiTeammates.length > 0) {
+        console.log(`🤖 Triggering AI meta votes for ${aiTeammates.length} teammates`);
+        
+        // Force System vote first to ensure voting appears in UI
+        setTimeout(() => {
+          fetch(`/api/games/${gameId}/meta/vote`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'Game',
+              team,
+              action: 'continue', // Default system vote to continue
+              confidence: 0.6 // Lower confidence to not override human decisions
+            })
+          })
+          .catch(err => console.error(`Error creating system meta vote:`, err));
+        }, 200);
+        
+        // Then stagger AI votes for variety
+        aiTeammates.forEach((model, index) => {
+          setTimeout(() => {
+            // Make a decision - randomize for variety
+            fetch(`/api/games/${gameId}/meta/vote`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model,
+                team,
+                action: Math.random() > 0.5 ? 'continue' : 'end_turn'
+              })
+            })
+            .catch(err => console.error(`Error triggering meta vote for ${model}:`, err));
+          }, index * 800 + 500);
+        });
+      }
+
+      res.json({
+        success: true,
+        message: discussionEntry.message,
+        isVoting: discussionEntry.isVoting,
+        voteType: discussionEntry.voteType
+      });
+    } catch (error: any) {
+      console.error("Error in meta discussion:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.post("/api/games/:id/meta/vote", async (req, res) => {
     try {
       const game = await storage.getGame(Number(req.params.id));
@@ -1565,6 +1674,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       if (!action || !["continue", "end_turn", "discuss_more"].includes(action)) {
         return res.status(400).json({ error: "Invalid action" });
+      }
+      
+      // Enhanced to support forced turn changes
+      const highPriority = req.body.highPriority === true;
+      const forceTurnChange = req.body.forceTurnChange === true;
+      
+      // Log the high-priority and forced flags
+      if (highPriority || forceTurnChange) {
+        console.log(`⚠️ Received ${highPriority ? 'HIGH PRIORITY' : ''} ${forceTurnChange ? 'FORCED' : ''} meta vote`);
       }
 
       // Allow human votes without model validation
@@ -1684,11 +1802,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let shouldEndTurn = false;
       let shouldContinue = false;
       
-      // CRITICAL: If timer expired, always end the turn no matter what
+      // CRITICAL: If timer expired or this is a forced vote, always end the turn no matter what
       if (timerExpired) {
         console.log(`⏰ TIMER EXPIRED - Automatically ending ${team} team's turn`);
         shouldEndTurn = true;
+      } else if (highPriority || forceTurnChange) {
+        // Special fast-path for prioritized end turn votes
+        console.log(`⚡ PRIORITY REQUEST - ${action === 'end_turn' ? 'Immediately ending turn' : 'Processing action'}`);
+        if (action === 'end_turn') {
+          shouldEndTurn = true;
+        } else if (action === 'continue') {
+          shouldContinue = true;
+        }
       } else if (thresholdReached || forceAction || hasHighConfidence) {
+        // Normal path for regular votes that meet threshold
         console.log(`🎮 Meta action "${action}" will be executed (${adjustedPercentage}% or automatic vote) with ${actionVotes.length} votes`);
         if (action === 'end_turn') {
           shouldEndTurn = true;

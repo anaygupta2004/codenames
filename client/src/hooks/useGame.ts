@@ -344,6 +344,8 @@ const connect = useCallback(() => {
             });
           } 
           else if (data.type === 'guess') {
+            console.log(`🎲 Received guess event: ${data.word} - ${data.result}`);
+            
             // Add guess to discussion
             newState.teamDiscussion = [
               ...(prev.teamDiscussion || []),
@@ -364,6 +366,41 @@ const connect = useCallback(() => {
             // Only add if not already revealed
             if (guessedWord && !newState.revealedCards.includes(guessedWord)) {
               newState.revealedCards.push(guessedWord);
+            }
+            
+            // ENHANCED: For correct guesses, immediately add a meta decision
+            if (data.result === 'correct') {
+              console.log(`✅ CORRECT GUESS DETECTED - AUTO-CREATING META DECISION`);
+              
+              // Create meta decision message
+              const metaDecisionMsg = {
+                team: data.team,
+                player: 'Game' as const,
+                message: "Team must decide: continue guessing or end turn?",
+                timestamp: (data.timestamp || Date.now()) + 100, // Ensure it appears after the guess
+                isVoting: true,
+                voteType: 'meta_decision',
+                metaOptions: ['continue', 'end_turn']
+              };
+              
+              // Add the meta decision to the discussion
+              newState.teamDiscussion.push(metaDecisionMsg);
+              
+              // Request AI models to participate
+              setTimeout(() => {
+                fetch(`/api/games/${prev.id}/meta/discuss`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    message: "Should we continue guessing or end turn?",
+                    team: data.team,
+                    triggerVoting: true,
+                    isVoting: true,
+                    voteType: 'meta_decision',
+                    forceMeta: true
+                  })
+                }).catch(err => console.error("Error creating meta decision after correct guess:", err));
+              }, 300);
             }
           }
           else if (data.type === 'word_votes') {
