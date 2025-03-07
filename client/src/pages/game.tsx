@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { AlertCircle, CheckCircle2, XCircle, Clock, Timer, Bot } from "lucide-react";
-import { SiOpenai, SiAnthropic, SiGooglegemini } from "react-icons/si";
+import { SiOpenai, SiAnthropic, SiGooglegemini, SiX } from "react-icons/si";
 import { storage } from "@/lib/storage";
 import { motion } from "framer-motion";
 
@@ -18,7 +18,7 @@ import { motion } from "framer-motion";
 const AI_MODEL_INFO = {
   "gpt-4o": { name: "GPT-4", Icon: SiOpenai },
   "claude-3-5-sonnet-20241022": { name: "Claude", Icon: SiAnthropic },
-  "grok-2-1212": { name: "Grok", Icon: Bot },
+  "grok-2-1212": { name: "Grok", Icon: SiX },
   "gemini-1.5-pro": { name: "Gemini", Icon: SiGooglegemini }
 } as const;
 
@@ -215,6 +215,9 @@ export default function GamePage() {
     voters: string[] 
   }>>({});
 
+  // Add this state variable near the other state hooks
+  const [highlightGameWords, setHighlightGameWords] = useState(false);
+
   // Query hook
   const { data: game, isLoading, isError } = useQuery<Game>({
     queryKey: [`/api/games/${id}`],
@@ -262,7 +265,11 @@ export default function GamePage() {
             };
             
             // Update local state immediately for instant UI update
-            setLocalDiscussion(prev => [...prev, newEntry]);
+            setLocalDiscussion(prev => [...prev, {
+              ...newEntry,
+              confidences: newEntry.confidences || [],
+              suggestedWords: newEntry.suggestedWords || []
+            }]);
             
             // Also update React Query cache
             queryClient.setQueryData([`/api/games/${id}`], (oldData: Game | undefined) => {
@@ -280,7 +287,7 @@ export default function GamePage() {
             
             // If the message has suggested words with high confidence, track them for potential voting
             if (newEntry.suggestedWords?.length > 0 && newEntry.confidences?.[0] >= 0.6) {
-              newEntry.suggestedWords.forEach((word, index) => {
+              newEntry.suggestedWords.forEach((word: string, index: number) => {
                 // Get the confidence for this word
                 const confidence = newEntry.confidences && index < newEntry.confidences.length 
                   ? newEntry.confidences[index] 
@@ -345,7 +352,11 @@ export default function GamePage() {
             };
             
             // Update local discussion
-            setLocalDiscussion(prev => [...prev, newDiscussionEntry]);
+            setLocalDiscussion(prev => [...prev, {
+              ...newDiscussionEntry,
+              confidences: newDiscussionEntry.confidences || [],
+              suggestedWords: newDiscussionEntry.suggestedWords || []
+            }]);
             
             // Update React Query cache with revealed card and discussion entry
             queryClient.setQueryData([`/api/games/${id}`], (oldData: Game | undefined) => {
@@ -1112,7 +1123,7 @@ export default function GamePage() {
         teamDiscussion.forEach(msg => {
           if (!msg.suggestedWords || msg.suggestedWords.length === 0) return;
           
-          msg.suggestedWords.forEach((word, idx) => {
+          msg.suggestedWords.forEach((word: string, index: number) => {
             // Skip meta options and revealed cards
             if (word === "CONTINUE" || word === "END TURN" || game.revealedCards.includes(word)) {
               // If it's a revealed card being suggested, tell the AI it was already guessed
@@ -1144,8 +1155,8 @@ export default function GamePage() {
             }
             
             // Get confidence for this word
-            const confidence = msg.confidences && idx < msg.confidences.length 
-              ? msg.confidences[idx] 
+            const confidence = msg.confidences && index < msg.confidences.length 
+              ? msg.confidences[index] 
               : 0.5;
             
             // Initialize if needed
@@ -1597,10 +1608,12 @@ export default function GamePage() {
     
     // Add message to local state immediately
     const newEntry: TeamDiscussionEntry = {
-          team: currentTeam,
+      team: currentTeam,
       player: 'human',
       message: discussionInput,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      confidences: [], // Add missing required property
+      suggestedWords: [] // Add missing required property
     };
     
     // Update local state first for immediate UI update
@@ -1621,12 +1634,9 @@ export default function GamePage() {
     }
     
     // Also make API call as backup
-    apiRequest(`/api/games/${id}/meta/discuss`, {
-      method: 'POST',
-      body: JSON.stringify({
-        message: discussionInput,
-        team: currentTeam
-      })
+    apiRequest("POST", `/api/games/${id}/meta/discuss`, {
+      message: discussionInput,
+      team: currentTeam
     }).catch(error => {
       toast({
         title: "Failed to send message",
@@ -1650,10 +1660,10 @@ export default function GamePage() {
 
   const getTextColor = (word: string): string => {
     if (isSpymasterView) {
-      if (game.assassin === word) return "text-white";
-      return game.revealedCards.includes(word) ? "text-white" : "text-black";
+      if (game?.assassin === word) return "text-white";
+      return game?.revealedCards?.includes(word) ? "text-white" : "text-black";
     }
-    return game.revealedCards.includes(word) ? "text-white" : "text-gray-900";
+    return game?.revealedCards?.includes(word) ? "text-white" : "text-gray-900";
   };
 
   // ENHANCED: Much more aggressive detection of voting activity with auto-creation of meta decisions
@@ -1668,6 +1678,7 @@ export default function GamePage() {
       entry.isVoting === true || 
       entry.voteType || 
       entry.action === "vote" ||
+      // @ts-ignore - Handle metaOptions which may not be in the type
       entry.metaOptions ||
       (entry.message && entry.message.includes("continue guessing or end turn"))
     );
@@ -1706,6 +1717,7 @@ export default function GamePage() {
         // Check if any meta decision exists after this guess
         const hasMetaDecisionAfterGuess = recentMessages.some(entry => 
           entry.isVoting === true && 
+          // @ts-ignore - Allow comparison with meta_decision
           entry.voteType === 'meta_decision' && 
           entry.timestamp > guessTimestamp
         );
@@ -1826,13 +1838,13 @@ export default function GamePage() {
     teamMessages.forEach(msg => {
       if (!msg.suggestedWords || msg.suggestedWords.length === 0) return;
       
-      msg.suggestedWords.forEach((word, idx) => {
+      msg.suggestedWords.forEach((word: string, index: number) => {
         // Skip meta options and revealed cards
         if (word === "CONTINUE" || word === "END TURN" || game.revealedCards.includes(word)) return;
         
         // Get confidence for this word
-        const confidence = msg.confidences && idx < msg.confidences.length 
-          ? msg.confidences[idx] 
+        const confidence = msg.confidences && index < msg.confidences.length 
+          ? msg.confidences[index] 
           : 0.5;
         
         // Initialize if needed
@@ -2233,12 +2245,24 @@ export default function GamePage() {
             <h3 className={`font-bold text-lg text-${teamColor}-700`}>
               {teamColor === "red" ? "Red" : "Blue"} Team Discussion
             </h3>
-            {isDiscussing && (
-              <div className="flex items-center text-amber-600">
-                <Clock className="w-4 h-4 mr-1" />
-                <span>{discussionTimer}s</span>
+            <div className="flex items-center gap-4">
+              {/* Word highlighting toggle */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">Highlight Words</span>
+                <Switch
+                  size="sm"
+                  checked={highlightGameWords}
+                  onCheckedChange={setHighlightGameWords}
+                  className="scale-75"
+                />
               </div>
-            )}
+              {isDiscussing && (
+                <div className="flex items-center text-amber-600">
+                  <Clock className="w-4 h-4 mr-1" />
+                  <span>{discussionTimer}s</span>
+                </div>
+              )}
+            </div>
           </div>
           
           {/* Debug info */}
@@ -2536,7 +2560,7 @@ export default function GamePage() {
     );
   };
 
-  // Enhanced Helper function to render a single message with clickable suggested words for easy voting
+  // Enhanced Helper function to render a single message with formatting support
   const renderMessage = (
     entry: TeamDiscussionEntry, 
     key: string, 
@@ -2563,8 +2587,77 @@ export default function GamePage() {
       : "";
     
     // Check if this is a turn change message (for stronger visual separation)
-    const isTurnChangeMsg = entry.message.includes("TEAM'S TURN") || entry.isTurnChange;
-    const isTurnStart = entry.message.includes("New Discussion Begins");
+    const isTurnChangeMsg = entry.message?.includes("TEAM'S TURN") || 
+      // @ts-ignore - Property may not exist on type but used in logic
+      entry.isTurnChange;
+    const isTurnStart = entry.message?.includes("New Discussion Begins");
+
+    // Format message with bold text and line breaks
+    const formatMessage = (message: string) => {
+      if (!message) return "";
+      
+      // First handle line breaks and spaces
+      let formatted = message;
+      
+      // Handle different types of line break notations
+      formatted = formatted.replace(/\/n/g, '<br/>');
+      formatted = formatted.replace(/\\n/g, '<br/>');
+      formatted = formatted.replace(/\n/g, '<br/>');
+      
+      // Replace multiple spaces with &nbsp;
+      formatted = formatted.replace(/ {2,}/g, (match) => {
+        return '&nbsp;'.repeat(match.length);
+      });
+      
+      // If word highlighting is enabled, highlight game words FIRST before other formatting
+      if (highlightGameWords && game) {
+        // Process all game words
+        game.words.forEach(gameWord => {
+          // Determine highlight color based on word type
+          let highlightClass = '';
+          
+          if (game.redTeam.includes(gameWord)) {
+            highlightClass = 'background-color:#ffcccc;';
+          } else if (game.blueTeam.includes(gameWord)) {
+            highlightClass = 'background-color:#cce5ff;';
+          } else if (game.assassin === gameWord) {
+            highlightClass = 'background-color:#333;color:white;';
+          } else {
+            // Neutral word
+            highlightClass = 'background-color:#f5f5dc;';
+          }
+          
+          // Always keep text bold but maintain its natural color (except for assassin)
+          const style = `${highlightClass}font-weight:bold;padding:0 3px;border-radius:3px;`;
+          
+          // Create patterns that explicitly match the word in various formats
+          // This will allow us to properly handle formatting characters
+          
+          // 1. Match **WORD** pattern (markdown bold)
+          const boldPattern = new RegExp(`\\*\\*(${gameWord})\\*\\*`, 'gi');
+          formatted = formatted.replace(boldPattern, `<span style="${style}">${gameWord}</span>`);
+          
+          // 2. Match 'WORD' pattern (single quotes)
+          const singleQuotePattern = new RegExp(`'(${gameWord})'`, 'gi');
+          formatted = formatted.replace(singleQuotePattern, `<span style="${style}">${gameWord}</span>`);
+          
+          // 3. Match "WORD" pattern (double quotes)
+          const doubleQuotePattern = new RegExp(`"(${gameWord})"`, 'gi');
+          formatted = formatted.replace(doubleQuotePattern, `<span style="${style}">${gameWord}</span>`);
+          
+          // 4. Finally, match standalone word with word boundaries
+          // But be careful not to match parts of already highlighted spans
+          const plainWordPattern = new RegExp(`(?<!<[^>]*)\\b(${gameWord})\\b(?![^<]*>)`, 'gi');
+          formatted = formatted.replace(plainWordPattern, `<span style="${style}">${gameWord}</span>`);
+        });
+      }
+      
+      // AFTER word highlighting, handle any remaining regular formatting
+      // such as non-game-word bold text
+      formatted = formatted.replace(/\*\*([^<>]*?)\*\*/g, '<strong>$1</strong>');
+      
+      return formatted;
+    };
 
     return (
       <motion.div
@@ -2620,7 +2713,11 @@ export default function GamePage() {
             ${hasSuggestions && !isTurnChangeMsg ? `bg-amber-50/40` : ''} 
             ${isVotingMsg && !isTurnChangeMsg ? `bg-blue-50/40` : ''}`
           }>
-            <div className="mb-1">{entry.message}</div>
+            {/* Use dangerouslySetInnerHTML to render formatted message */}
+            <div 
+              className="mb-1"
+              dangerouslySetInnerHTML={{ __html: formatMessage(entry.message) }}
+            ></div>
             
             {/* If message has suggested words, show them as clickable buttons for voting */}
             {hasSuggestions && entry.suggestedWords && entry.suggestedWords.length > 0 && !entry.suggestedWords.includes("CONTINUE") && !entry.suggestedWords.includes("END TURN") && (
@@ -3058,96 +3155,108 @@ export default function GamePage() {
 
   // Main component render
   return (
-    <div className="min-h-screen bg-neutral-50 p-4">
+    <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 p-4">
       <InitialReset />
-      <div className="mb-6 text-center">
-        <h1 className="text-3xl font-bold mb-3">Codenames AI</h1>
+      
+      {/* Shift header elements slightly left for better visual alignment */}
+      <div className="mb-6 flex flex-col items-center justify-center -translate-x-4">
+        {/* Animated gradient title */}
+        <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-red-600 via-blue-600 to-red-600 bg-300% text-transparent bg-clip-text drop-shadow-sm animate-gradient">
+          Codenames AI
+        </h1>
 
-        <div className="flex justify-center items-center gap-6 mb-3">
-          <div className="text-red-500 font-bold text-xl">Red: {game.redScore}</div>
-          <div className={`px-6 py-2 rounded-full font-semibold ${
-            isRedTurn ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
+        {/* Score display with slight left shift */}
+        <div className="flex justify-center items-center gap-6 mb-4 bg-white/20 backdrop-blur-sm py-3 px-6 rounded-xl shadow-md max-w-md w-full">
+          <div className="text-red-400 font-bold text-xl drop-shadow-sm">Red: {game.redScore}</div>
+          <div className={`px-6 py-2 rounded-full font-semibold shadow-sm ${
+            isRedTurn ? "bg-red-500 text-white" : "bg-blue-500 text-white"
           }`}>
             {capitalizedTeam}'s Turn
           </div>
-          <div className="text-blue-500 font-bold text-xl">Blue: {game.blueScore}</div>
+          <div className="text-blue-400 font-bold text-xl drop-shadow-sm">Blue: {game.blueScore}</div>
         </div>
 
+        {/* Controls with the same left shift */}
         <div className="flex items-center justify-center gap-4 mb-3">
-          <div className="flex items-center gap-2">
-            <Timer className="w-4 h-4" />
-            <span className={`font-medium ${turnTimer <= 10 ? 'text-red-500' : ''}`}>
+          <div className="flex items-center gap-2 bg-white/30 backdrop-blur-sm px-4 py-2 rounded-lg shadow-sm">
+            <Timer className="w-4 h-4 text-white" />
+            <span className={`font-medium ${turnTimer <= 10 ? 'text-red-300' : 'text-white'}`}>
               Turn: {turnTimer}s
             </span>
           </div>
-            <div className="flex items-center gap-2">
-          <Switch
-            checked={isSpymasterView}
-            onCheckedChange={setIsSpymasterView}
-          />
-          <span className="font-medium">Spymaster View</span>
+          <div className="flex items-center gap-2 bg-white/30 backdrop-blur-sm px-4 py-2 rounded-lg shadow-sm">
+            <Switch
+              checked={isSpymasterView}
+              onCheckedChange={setIsSpymasterView}
+            />
+            <span className="font-medium text-white">Spymaster View</span>
           </div>
         </div>
       </div>
 
-      {/* Change to new layout (log on left, game board in middle, discussion on right) */}
+      {/* Fixed height for both panels */}
       <div className="max-w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[calc(100vh-12rem)]">
-        {/* Left sidebar - Game Log */}
+        {/* Left sidebar - Game Log with fixed height */}
         <div className="lg:col-span-3">
-          <Card className="h-full">
-            <CardContent className="p-4">
+          <Card className="h-[calc(100vh-16rem)] bg-white/95 backdrop-blur shadow-xl overflow-hidden">
+            <CardContent className="p-4 h-full flex flex-col">
               <h3 className="font-bold text-lg mb-4">Game Log</h3>
-              {renderGameLog()}
+              <div className="flex-1 overflow-auto">
+                {renderGameLog()}
+              </div>
             </CardContent>
           </Card>
         </div>
-        
-        {/* Middle - Game board */}
+      
+        {/* Game board */}
         <div className="lg:col-span-5">
           <div className="grid grid-cols-5 gap-5">
-          {game.words.map((word) => (
-            <Card
-              key={word}
-              className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105 h-40 flex items-center justify-center shadow-md`}
-              onClick={() => {
-                  console.log(`📌 Card clicked: ${word}`);
-                  if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
-                    console.log(`🎮 Making guess for word: ${word}`);
-                    makeGuess.mutate(word);
-                  } else {
-                    console.log(`⚠️ Card click ignored: ${
-                      game.revealedCards.includes(word) ? 'already revealed' :
-                      game.gameState?.includes("win") ? 'game already won' :
-                      aiTurnInProgress.current ? 'AI turn in progress' : 'unknown reason'
-                    }`);
-                  }
-              }}
-            >
-                <CardContent className="p-8 text-center flex items-center justify-center h-full w-full">
-                  <span className={`font-medium text-3xl ${getTextColor(word)}`}>
-                  {word}
-                </span>
-              </CardContent>
-            </Card>
-          ))}
+            {game.words.map((word) => (
+              <Card
+                key={word}
+                className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105 h-40 flex items-center justify-center shadow-md`}
+                onClick={() => {
+                    console.log(`📌 Card clicked: ${word}`);
+                    if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
+                      console.log(`🎮 Making guess for word: ${word}`);
+                      makeGuess.mutate(word);
+                    } else {
+                      console.log(`⚠️ Card click ignored: ${
+                        game.revealedCards.includes(word) ? 'already revealed' :
+                        game.gameState?.includes("win") ? 'game already won' :
+                        aiTurnInProgress.current ? 'AI turn in progress' : 'unknown reason'
+                      }`);
+                    }
+                }}
+              >
+                  <CardContent className="p-8 text-center flex items-center justify-center h-full w-full">
+                    <span className={`font-medium text-3xl ${getTextColor(word)}`}>
+                    {word}
+                  </span>
+                </CardContent>
+              </Card>
+            ))}
           </div>
         </div>
 
-        {/* Right sidebar - Team Discussion */}
+        {/* Right sidebar - Team Discussion with matching height */}
         <div className="lg:col-span-4">
-          {renderTeamDiscussion()}
+          <Card className="h-[calc(100vh-16rem)] bg-white/95 backdrop-blur shadow-xl overflow-hidden flex flex-col">
+            {renderTeamDiscussion()}
+          </Card>
         </div>
       </div>
 
+      {/* Game win modal - add styling to match */}
       {game.gameState?.includes("win") && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center">
-          <Card className="w-96">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center backdrop-blur-sm">
+          <Card className="w-96 bg-white/95 shadow-xl">
             <CardContent className="p-6 text-center">
-              <h2 className="text-2xl font-bold mb-4">
+              <h2 className="text-2xl font-bold mb-4 bg-gradient-to-r from-blue-600 to-red-600 text-transparent bg-clip-text">
                 {game.gameState === "red_win" ? "Red Team Wins!" : "Blue Team Wins!"}
               </h2>
               <Button
-                className="w-full"
+                className="w-full bg-gradient-to-r from-blue-600 to-red-600 hover:from-blue-700 hover:to-red-700"
                 onClick={() => window.location.href = "/"}
               >
                 Play Again
