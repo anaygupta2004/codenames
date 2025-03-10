@@ -420,6 +420,8 @@ export default function GamePage() {
           }
 
           if (data.type === 'guess') {
+            const audio = new Audio("notification.mp3");
+            audio.play();
             console.log(`🎲 Received guess event: ${data.word} - ${data.result}`);
             const guessResult = data.result; // "correct", "wrong", or "assassin"
             
@@ -725,6 +727,9 @@ export default function GamePage() {
           reasoning: data.reasoning
         }]);
       }
+
+      const audio = new Audio("/notification.mp3");
+      audio.play().catch((e) => console.error("Playback failed:", e));
       
       aiTurnInProgress.current = false;
     },
@@ -3340,6 +3345,8 @@ export default function GamePage() {
                     
                     if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
                       console.log(`🎮 Making guess for word: ${word}`);
+                      const audio = new Audio("notification.mp3");
+                      audio.play();
                       makeGuess.mutate(word);
                     } else {
                       console.log(`⚠️ Card click ignored: ${
