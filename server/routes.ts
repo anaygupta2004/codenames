@@ -7,6 +7,7 @@ import {
   getGuesserMove, 
   discussAndVote, 
   makeAgentDecision,
+  getMetaDecision,
   formatDiscussionMessage,
   updateTeamMemory 
 } from "./lib/ai-service";
@@ -30,8 +31,8 @@ const gameDiscussions = new Map<number, {
   aiDiscussionInProgress: boolean;
 }>();
 
-const MAX_MODELS_PER_GAME = 6;  // Maximum total AI models per game
-const MAX_MODELS_PER_TEAM = 3;  // Maximum AI models per team
+const MAX_MODELS_PER_GAME = 8;  // Maximum total AI models per game
+const MAX_MODELS_PER_TEAM = 4;  // Maximum AI models per team
 
 // Track all active connections for cleanup
 const activeConnections = new Set<WebSocket>();
@@ -82,9 +83,9 @@ async function handleGuess(gameId: number, team: string, word: string): Promise<
   // Determine the result of the guess
   let result: "correct" | "wrong" | "assassin";
   let updates: any = { 
-    revealedCards: newRevealedCards,
-    // IMPORTANT: Reset turn timer whenever a guess is made
-    currentTurnStartTime: new Date()
+    revealedCards: newRevealedCards
+    // CRITICAL FIX: Do NOT reset turn timer when guessing - this will be set only for wrong guesses
+    // This ensures the timer continues running during meta decisions after correct guesses
   };
   
   if (word === game.assassin) {
@@ -102,6 +103,7 @@ async function handleGuess(gameId: number, team: string, word: string): Promise<
     } else if (game.blueTeam.includes(word)) {
       updates.blueScore = (game.blueScore || 0) + 1;
     }
+    // CRITICAL FIX: Do NOT change turn on correct guesses - allow team to continue guessing
   } else {
     // Wrong guess: either neutral word or opponent's word
     result = "wrong";
@@ -142,6 +144,24 @@ async function handleGuess(gameId: number, team: string, word: string): Promise<
   };
   
   updates.gameHistory = [...(game.gameHistory || []), historyEntry];
+  
+  // CRITICAL FIX: Also add a discussion message about the correct guess
+  // so it appears prominently in the team chat
+  if (result === "correct") {
+    const discussionEntry = {
+      team,
+      player: 'Game',
+      message: `🎯 CORRECT! ${team.toUpperCase()} team guessed "${word}" correctly!`,
+      timestamp: Date.now(),
+      isGameMessage: true,
+      isCorrectGuess: true
+    };
+    
+    updates.teamDiscussion = [
+      ...(game.teamDiscussion || []),
+      discussionEntry
+    ];
+  }
   
   // Update game state
   await storage.updateGame(gameId, updates);
@@ -234,13 +254,27 @@ const handleAIDiscussion = async (
   teamColor: "red" | "blue",
   isFirstRound = false
 ) => {
+  console.log(`🎮 Starting AI discussion for team ${teamColor} with ${teamPlayers.length} operatives`);
   const gameRoom = gameDiscussions.get(gameId);
-  if (!gameRoom || gameRoom.aiDiscussionInProgress) {
-    console.log('❌ Discussion blocked - gameRoom missing or discussion in progress');
+  
+  // CRITICAL FIX: Allow discussion even if another is in progress when this is called 
+  // directly from the spymaster clue endpoint - this ensures operatives always discuss
+  // after a spymaster gives a clue
+  if (!gameRoom) {
+    console.log('❌ Discussion blocked - gameRoom missing');
+    return;
+  }
+  
+  // Only block if a discussion is already in progress and this isn't the first round after a clue
+  if (gameRoom.aiDiscussionInProgress && !isFirstRound) {
+    console.log('❌ Discussion skipped - another discussion already in progress');
     return;
   }
 
+  // Reset discussion state and mark as in progress
+  console.log(`🎯 Starting AI team discussion for ${teamColor} team with clue: ${lastClue?.word || 'none'}`);
   gameRoom.aiDiscussionInProgress = true;
+  
   let guessCount = 0;
   const maxGuesses = lastClue?.number ? lastClue.number + 1 : 1;
   let continueGuessing = true;
@@ -574,12 +608,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
     gameId: number; 
     team: string; 
     player?: AIModel;
+    uniqueId?: string; // Add uniqueId for preventing duplicate votes
+    modelWithId?: string; // Full model ID with unique identifier
     connectionTime: number;
     clientId: string;
   }>();
 
   // Track client IDs to prevent duplicates
   const activeClients = new Map<string, WebSocket>();
+  
+  // Function to get the appropriate icon for a model
+  const getModelIcon = (model: string): string => {
+    // Extract base model name from any format (model#uniqueId, model-timestamp, etc.)
+    let baseModel = model;
+    
+    // Handle various formats of model IDs
+    if (typeof model === 'string') {
+      if (model.includes('#')) {
+        baseModel = model.split('#')[0];
+      } else if (model.includes('-')) {
+        const parts = model.split('-');
+        if (VALID_MODELS.includes(parts[0] as any)) {
+          baseModel = parts[0];
+        }
+      }
+    }
+    
+    // Complete map of models to visual icons
+    const iconMap: {[key: string]: string} = {
+      // AI Models
+      'gpt-4o': '🟢', // OpenAI - Green
+      'claude-3-5-sonnet-20241022': '🟣', // Anthropic - Purple
+      'grok-2-1212': '🔴', // Grok - Red
+      'gemini-1.5-pro': '🔵', // Google - Blue
+      'llama-7b': '🟡', // Meta - Yellow
+      
+      // Human users
+      'human': '👤', // Human player
+      
+      // System
+      'Game': '🎮'  // Game system messages
+    };
+    
+    // Return the icon or default to robot icon if unknown
+    return iconMap[baseModel] || '🤖';
+  };
 
   wss.on('connection', (ws: WebSocket) => {
     const clientIp = (ws as any)._socket.remoteAddress;
@@ -642,6 +715,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const gameRoom = initializeGameRoom(data.gameId);
           const team = data.team as "red" | "blue";
           const model = data.player as AIModel;
+          
+          // Handle unique model IDs for preventing duplicate votes - use 5-digit format
+          const uniqueId = data.uniqueId || Math.floor(10000 + Math.random() * 90000).toString();
+          let modelWithId = model;
+          
+          // Add unique ID to model name for tracking
+          if (model && uniqueId) {
+            modelWithId = `${model}#${uniqueId}`;
+            console.log(`🔑 Created unique model identifier for WebSocket: ${modelWithId}`);
+          }
 
           // Check if this is an AI model trying to join
           if (VALID_MODELS.includes(model)) {
@@ -653,7 +736,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
               ws.close();
               return;
             }
-            gameRoom.teamModels[team].add(model);
+            
+            // Store the model with its unique ID to prevent duplicate voting
+            gameRoom.teamModels[team].add(modelWithId);
+            
+            // Send model icon information back to the client for display
+            ws.send(JSON.stringify({
+              type: 'model_info',
+              model,
+              uniqueId,
+              modelId: modelWithId,
+              team,
+              icon: getModelIcon(model) // Add the icon for this model
+            }));
           }
 
           // Remove existing connection if any
@@ -664,16 +759,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
               oldGameRoom.clients.delete(ws);
               // Remove model from old game if it was an AI
               if (VALID_MODELS.includes(oldConn.player as AIModel)) {
+                // First try to delete using the full modelWithId if available
+                if (oldConn.modelWithId) {
+                  oldGameRoom.teamModels[oldConn.team as "red" | "blue"].delete(oldConn.modelWithId);
+                }
+                // Also delete using the base model name for backward compatibility
                 oldGameRoom.teamModels[oldConn.team as "red" | "blue"].delete(oldConn.player as AIModel);
               }
             }
           }
           
-          // Add new connection
+          // Add new connection with unique ID information
           connections.set(ws, { 
             gameId: data.gameId, 
             team, 
             player: model || 'human',
+            uniqueId: uniqueId, // Store the unique ID for this model instance
+            modelWithId: modelWithId, // Store the full model identifier
             connectionTime: Date.now(),
             clientId: data.clientId
           });
@@ -779,6 +881,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           gameRoom.clients.delete(ws);
           // Remove AI model from game when disconnecting
           if (VALID_MODELS.includes(conn.player as AIModel)) {
+            // First try to delete using the full modelWithId if available
+            if (conn.modelWithId) {
+              console.log(`🔑 Removing model with unique ID: ${conn.modelWithId}`);
+              gameRoom.teamModels[conn.team as "red" | "blue"].delete(conn.modelWithId);
+            }
+            // Also delete using the base model name for backward compatibility
             gameRoom.teamModels[conn.team as "red" | "blue"].delete(conn.player as AIModel);
           }
         }
@@ -880,11 +988,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         timestamp: Date.now()
       };
 
-      // Update the game state with the clue and reset the turn timer
+      // Update the game state with the clue, reset turn timer, and add a discussion prompt
       await storage.updateGame(game.id, {
         gameHistory: game.gameHistory ? [...game.gameHistory, historyEntry] : [historyEntry],
         // CRITICAL: Reset turn timer when a clue is given
-        currentTurnStartTime: new Date()
+        currentTurnStartTime: new Date(),
+        // Add a system message to team discussion to prompt operatives
+        teamDiscussion: [
+          ...(game.teamDiscussion || []),
+          {
+            team: isRedTurn ? "red" : "blue",
+            player: "Game",
+            message: `Spymaster has given the clue: ${clue.word} (${clue.number}). Team should discuss and vote on words to guess.`,
+            timestamp: Date.now(),
+            confidences: [1],
+            suggestedWords: [],
+            round: (game.teamDiscussion || [])
+              .filter(d => d.team === (isRedTurn ? "red" : "blue"))
+              .length + 1
+          }
+        ]
       });
 
       res.json(clue);
@@ -1195,12 +1318,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
           
           // Only change turn if it was a wrong guess
+          // CRITICAL FIX: Only change turn for wrong guesses
           if (
+            // Determine if this is a wrong guess (not team's own word)
             (game.currentTurn === "red_turn" && !game.redTeam.includes(newCard)) ||
             (game.currentTurn === "blue_turn" && !game.blueTeam.includes(newCard))
           ) {
-          result = "wrong";
+            result = "wrong";
+            // Change turn for wrong guesses
             updates.currentTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+          } else {
+            // Correct guess - do NOT change turn (team continues)
+            result = "correct";
           }
         }
 
@@ -1250,26 +1379,92 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/games/:id/ai/vote", async (req, res) => {
+    // Log full poll info for debugging
+    console.log(`📊 Received vote with poll data:`, {
+      pollId: req.body.pollId,
+      team: req.body.team,
+      word: req.body.word,
+      uniqueId: req.body.uniqueId,
+      timestamp: Date.now()
+    });
     try {
       const game = await storage.getGame(Number(req.params.id));
       if (!game) return res.status(404).json({ error: "Game not found" });
 
-      const { model, team, word } = req.body;
+      const { model, team, word, uniqueId } = req.body;
 
       if (!team) {
         return res.status(400).json({ error: "Team is required" });
       }
 
       const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
+      // Get count of operatives (excluding spymaster) for more accurate voting
+      const teamSpymaster = team === "red" ? game.redSpymaster : game.blueSpymaster;
+      const operativesCount = currentTeamPlayers.filter(p => p !== teamSpymaster).length;
+      console.log(`Team ${team} has ${operativesCount} operatives for vote calculation`);
+      
+      // Extract the base model name and uniqueId from the model parameter
+      let baseModel = model;
+      let modelUniqueId = uniqueId || ''; // Use provided uniqueId if available
+      
+      // Handle model#uniqueId format
+      if (typeof model === 'string' && model.includes('#')) {
+        const parts = model.split('#');
+        baseModel = parts[0];
+        // Only use the ID from the model parameter if no explicit uniqueId was provided
+        if (!modelUniqueId) {
+          modelUniqueId = parts[1];
+        }
+      } 
+      // Handle older model-timestamp format for backward compatibility
+      else if (typeof model === 'string' && model.includes('-')) {
+        const parts = model.split('-');
+        if (VALID_MODELS.includes(parts[0] as any)) {
+          baseModel = parts[0];
+          // Only use the ID from the model parameter if no explicit uniqueId was provided
+          if (!modelUniqueId) {
+            modelUniqueId = parts.slice(1).join('-');
+          }
+        }
+      }
+      
+      console.log(`🔑 Vote request: model=${model}, baseModel=${baseModel}, uniqueId=${modelUniqueId}`);
       
       // Allow human votes without model validation
-      if (model !== 'human' && (!model || !VALID_MODELS.includes(model as AIModel))) {
+      // But validate AI models to ensure they're supported
+      if (baseModel !== 'human' && baseModel !== 'Game' && (!baseModel || !VALID_MODELS.includes(baseModel as AIModel))) {
         return res.status(400).json({ error: "Invalid model" });
       }
 
-      if (model !== 'human' && !currentTeamPlayers.includes(model)) {
+      if (baseModel !== 'human' && baseModel !== 'Game' && !currentTeamPlayers.includes(baseModel)) {
         return res.status(400).json({ error: "AI model is not part of the team" });
       }
+
+      // ENHANCED: Create a unique identifier for each model to prevent duplicates
+      // Use the provided unique ID or generate one if not provided
+      const finalUniqueId = modelUniqueId || Math.floor(1000000000000000 + Math.random() * 9000000000000000).toString();
+      
+      // Format the model ID with the unique identifier
+      const modelWithId = modelUniqueId ? `${baseModel}#${finalUniqueId}` : baseModel;
+      
+      // Check if this exact unique ID has already voted for this word
+      const hasExactDuplicate = (game.consensusVotes || []).some(v => 
+        v.team === team && 
+        v.word === word && 
+        (v.player === modelWithId || 
+         (typeof v.player === 'string' && v.player.includes('#') && v.player.split('#')[1] === finalUniqueId))
+      );
+      
+      if (hasExactDuplicate) {
+        console.log(`⚠️ Rejecting duplicate vote: ${modelWithId} has already voted for word ${word}`);
+        return res.status(400).json({ 
+          error: "This player has already voted for this word",
+          alreadyVoted: true
+        });
+      }
+      
+      console.log(`✅ Using model ID for vote: ${modelWithId} (unique ID: ${finalUniqueId})`);
+      
 
       const clueContent = game.gameHistory?.filter(h => h.type === "clue")?.pop()?.content || "";
       const clueMatch = clueContent.match(/^(.+?)\s*\((\d+)\)$/);
@@ -1279,20 +1474,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const availableWords = game.words.filter(w => !(game.revealedCards || []).includes(w));
       
-      // Create the new vote object
+      // Calculate current game state information for decision making
+      const currentClueGuessCount = (game.gameHistory || [])
+        .filter(h => 
+          h.type === "guess" && 
+          h.turn === team && 
+          h.relatedClue === clueContent
+        ).length;
+      
+      // Current score and remaining score to win
+      const redRemainingScore = game.redTeam.length - (game.redScore || 0);
+      const blueRemainingScore = game.blueTeam.length - (game.blueScore || 0);
+      const teamRemainingScore = team === "red" ? redRemainingScore : blueRemainingScore;
+      
+      // Create the new vote object with the uniquified model ID
       let newVote: ConsensusVote;
       
       if (model === 'human') {
         // For human votes, create a direct vote without AI decisions
         newVote = {
-        team,
-          player: model,
-        word,
+          team,
+          player: modelWithId, // Use uniquified model ID
+          word,
           approved: true, // Humans vote to approve by default
           confidence: 0.9,
           timestamp: Date.now(),
           reason: "Human player voted",
-          relatedClue: clueContent // Store the current clue for traceability
+          relatedClue: clueContent, // Store the current clue for traceability
+          clueGuessCount: currentClueGuessCount, // Add count of guesses already made with this clue
+          remainingScore: teamRemainingScore, // Add remaining score to win
+          gameScore: { red: game.redScore || 0, blue: game.blueScore || 0 }, // Add current game score
+          // CRITICAL FIX: Include pollId and messageId for proper association with UI polls
+          pollId: req.body.pollId, // Keep the poll ID for UI matching
+          messageId: req.body.messageId // Keep message ID for UI matching
         };
       } else {
         // For AI, get the decision
@@ -1304,26 +1518,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
           game.teamDiscussion || [],
           availableWords,
           game.revealedCards || [],
-          (game.teamDiscussion || []).filter(d => 
-            d.team === team && 
-            d.suggestedWord && 
-            game.gameHistory?.some(h => 
-              h.type === "guess" && 
-              h.turn === team && 
-              h.word === d.suggestedWord
-            )
-          ).length
+          currentClueGuessCount
         );
         
         newVote = {
-        team,
-        player: model,
-        word,
+          team,
+          player: modelWithId, // Use uniquified model ID
+          word,
           approved: vote.decision === "guess",
           confidence: vote.confidence,
           timestamp: Date.now(),
           reason: vote.explanation,
-          relatedClue: clueContent // Store the current clue for traceability
+          relatedClue: clueContent, // Store the current clue for traceability
+          clueGuessCount: currentClueGuessCount, // Add count of guesses already made with this clue
+          remainingScore: teamRemainingScore, // Add remaining score to win
+          gameScore: { red: game.redScore || 0, blue: game.blueScore || 0 }, // Add current game score
+          // CRITICAL FIX: Include pollId and messageId for proper association with UI polls
+          pollId: req.body.pollId, // Keep the poll ID for UI matching
+          messageId: req.body.messageId // Keep message ID for UI matching
         };
       }
 
@@ -1336,28 +1548,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         consensusVotes: updatedVotes
       });
 
-      // Calculate the voting status
-      const teamAIPlayers = currentTeamPlayers.filter(
-        (p: string) => p !== "human" && p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
+      // Calculate the voting status based on accurate team member count
+      // Get all operatives (excluding spymaster) for accurate percentage calculation
+      const teamOperatives = currentTeamPlayers.filter(
+        (p: string) => p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
+      );
+      
+      const teamAIOperatives = teamOperatives.filter(
+        (p: string) => p !== "human"
       ) as AIModel[];
 
+      // CRITICAL FIX: Filter votes to only include those from this team for this word
       const teamVotes = updatedVotes.filter(v => v.team === team && v.word === word);
       const voteCount = teamVotes.length;
       
-      // Get actual team member count (excluding spymaster)
-      const effectiveTeamSize = currentTeamPlayers.filter(p => 
-        p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
-      ).length;
+      // Use the operativesCount we calculated earlier to ensure consistency
+      console.log(`Team ${team} has ${operativesCount} operatives for vote calculation`);
       
       // Make the threshold easier to reach by weighting human votes more
-      const humanVoteCount = teamVotes.filter(v => v.player === 'human').length;
+      const humanVoteCount = teamVotes.filter(v => 
+        typeof v.player === 'string' && 
+        (v.player === 'human' || v.player.startsWith('human#'))
+      ).length;
       const aiVoteCount = voteCount - humanVoteCount;
       
       // Human votes count more than AI votes (weighting of 2)
       const weightedVoteCount = aiVoteCount + (humanVoteCount * 2);
-      const totalVoters = Math.max(1, effectiveTeamSize);
+      const totalVoters = Math.max(1, operativesCount);
       
-      // Adjusted percentage calculation
+      // Adjusted percentage calculation based on team size
       const votePercentage = Math.round((weightedVoteCount / totalVoters) * 100);
       
       // Ensure vote percentage is at least 30% if there's any vote at all
@@ -1385,49 +1604,167 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ]
         });
         
-        // Send messages to all clients
+        // CRITICAL FIX: Filter clients by team membership to ensure each team only gets their own polls
         gameRoom.clients.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
-            // Send vote message
-            client.send(JSON.stringify({
-              type: 'word_votes',
-              team,
-              words: [{
-                word,
-                votes: voteCount,
-                percentage: adjustedPercentage, // Use adjusted percentage
-                voters: teamVotes.map(v => ({ player: v.player, confidence: v.confidence }))
-              }],
-              totalVoters,
-              timestamp: Date.now()
-            }));
+            // Get client connection info to check team
+            const connInfo = connections.get(client);
             
-            // Also send a discussion message for this vote
-            client.send(JSON.stringify({
-              type: 'discussion',
-              team: team,
-              player: 'Game',
-              content: `Votes for "${word}": ${voterNames} (${adjustedPercentage}%)`,
-              message: `Votes for "${word}": ${voterNames} (${adjustedPercentage}%)`,
-              timestamp: Date.now()
-            }));
+            // Get the appropriate icon for each voter
+            const voterIconInfo = teamVotes.map(v => {
+              // Extract base model name from any format
+              let baseModel = v.player;
+              
+              if (typeof baseModel === 'string') {
+                if (baseModel.includes('#')) {
+                  baseModel = baseModel.split('#')[0];
+                } else if (baseModel.includes('-')) {
+                  const parts = baseModel.split('-');
+                  const validModels = ['gpt-4o', 'claude-3-5-sonnet-20241022', 'grok-2-1212', 'gemini-1.5-pro', 'llama-7b'];
+                  if (validModels.includes(parts[0])) {
+                    baseModel = parts[0];
+                  }
+                }
+              }
+              
+              // Complete map of models to visual icons
+              const iconMap: {[key: string]: string} = {
+                // AI Models
+                'gpt-4o': '🟢', // OpenAI - Green
+                'claude-3-5-sonnet-20241022': '🟣', // Anthropic - Purple
+                'grok-2-1212': '🔴', // Grok - Red
+                'gemini-1.5-pro': '🔵', // Google - Blue
+                'llama-7b': '🟡', // Meta - Yellow
+                
+                // Human users
+                'human': '👤', // Human player
+                
+                // System
+                'Game': '🎮'  // Game system messages
+              };
+              
+              // Return player info with icon
+              return { 
+                player: v.player, 
+                confidence: v.confidence,
+                icon: iconMap[baseModel] || '🤖'
+              };
+            });
+            
+            // Format voter names with icons and add reasoning
+            const formattedVoters = voterIconInfo.map(v => `${v.icon} ${typeof v.player === 'string' ? v.player.split('#')[0] : v.player}`).join(', ');
+            
+            // Add reasoning from votes to each voter
+            const votersWithReasoning = voterIconInfo.map(voter => {
+              // Find matching vote to get reasoning
+              const matchingVote = teamVotes.find(v => 
+                (typeof v.player === 'string' && typeof voter.player === 'string' && 
+                 v.player.split('#')[0] === voter.player.split('#')[0])
+              );
+              
+              return {
+                ...voter,
+                reasoning: matchingVote?.reason || null,
+                clueGuessCount: matchingVote?.clueGuessCount || 0,
+                gameScore: matchingVote?.gameScore || { red: game.redScore || 0, blue: game.blueScore || 0 }
+              };
+            });
+            
+            // Either send to all clients (for debugging) or filter by team 
+            // Only send vote messages to clients on the same team
+            if (!connInfo || connInfo.team === team) {
+              // CRITICAL FIX: Ensure messageId and pollId are always both included and properly linked
+              const messageIdToUse = req.body.messageId || `message-${team}-${word}-${Date.now()}`;
+              const pollIdToUse = req.body.pollId || `word-${team}-${word}-${Date.now()}`;
+              
+              // Send vote message - include poll ID to ensure independent polls
+              client.send(JSON.stringify({
+                type: 'word_votes',
+                team,
+                // Include poll ID from request or generate a stable one for this vote instance
+                pollId: pollIdToUse,
+                words: [{
+                  word,
+                  votes: voteCount,
+                  percentage: adjustedPercentage, // Use adjusted percentage
+                  voters: votersWithReasoning,
+                  clueGuessCount: currentClueGuessCount, 
+                  gameScore: { red: game.redScore || 0, blue: game.blueScore || 0 }
+                }],
+                totalVoters,
+                timestamp: Date.now(),
+                messageId: messageIdToUse // Pass messageId for proper poll association
+              }));
+              
+              // Also send a discussion message for this vote
+              client.send(JSON.stringify({
+                type: 'discussion',
+                team: team,
+                player: 'Game',
+                content: `Votes for "${word}": ${formattedVoters} (${adjustedPercentage}%)`,
+                message: `Votes for "${word}": ${formattedVoters} (${adjustedPercentage}%)`,
+                timestamp: Date.now()
+              }));
+            }
           }
         });
       }
 
-      // ENHANCED AUTOMATIC VOTING: Lower threshold to make guessing more aggressive
-      // For automated guessing, we want to be more aggressive with threshold
-      const thresholdReached = adjustedPercentage >= 30; // Lower threshold to 30%
+      // Check if all operatives have voted to ensure we wait for all votes
+      const teamOperativesCount = operativesCount;
+      const voteParticipation = voteCount / teamOperativesCount;
+      const participationPercentage = Math.round(voteParticipation * 100);
       
-      // If it's a human vote, always consider it enough to make a guess
-      const hasHumanVote = teamVotes.some(v => v.player === 'human');
+      console.log(`🔍 Vote participation: ${voteCount}/${teamOperativesCount} operatives (${participationPercentage}%)`);
+      
+      // Three scenarios to determine if threshold is reached:
+      // 1. All team operatives have voted (100% participation)
+      const allOperativesVoted = voteCount >= teamOperativesCount;
+      
+      // 2. Lower threshold if it's a human vote on the current team's turn
+      const hasHumanVote = teamVotes.some(v => 
+        typeof v.player === 'string' && 
+        (v.player === 'human' || v.player.startsWith('human#'))
+      );
       const forceGuess = hasHumanVote && team === (game.currentTurn === 'red_turn' ? 'red' : 'blue');
       
-      // Also allow automatic guessing based on confidence values
+      // 3. Multiple high confidence votes
       const highConfidenceVotes = teamVotes.filter(v => v.confidence >= 0.75);
       const hasHighConfidence = highConfidenceVotes.length >= 2; // Two or more high confidence votes
       
+      // Determine if threshold is reached based on any scenario
+      const thresholdReached = allOperativesVoted || 
+                             (adjustedPercentage >= 50) || // Higher percentage with partial participation 
+                             (voteParticipation >= 0.75 && adjustedPercentage >= 40); // Good participation with decent consensus
+      
       console.log(`🔍 Enhanced vote threshold check: ${adjustedPercentage}% >= 30% or human vote: ${hasHumanVote} or high confidence: ${hasHighConfidence}`);
+      
+      // Create a meta poll regardless of whether the threshold was reached
+      // This ensures users always see a poll after each vote
+      if (team === (game.currentTurn === 'red_turn' ? 'red' : 'blue')) {
+        // Create a unique pollId for the meta decision
+        const metaDecisionPollId = `meta-${team}-${Date.now()}`;
+        
+        // Trigger meta poll for the team
+        try {
+          await fetch(`http://localhost:${process.env.PORT || 3000}/api/games/${gameId}/meta/discuss`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: "Should we guess this word or continue discussing?",
+              team,
+              triggerVoting: true,
+              isVoting: true,
+              voteType: 'meta_decision',
+              forceMeta: true,
+              pollId: metaDecisionPollId
+            })
+          });
+          console.log(`📊 Created meta poll after vote with ID: ${metaDecisionPollId}`);
+        } catch (metaError) {
+          console.error("Error creating meta poll after vote:", metaError);
+        }
+      }
       
       if ((thresholdReached || forceGuess || hasHighConfidence) && team === (game.currentTurn === 'red_turn' ? 'red' : 'blue')) {
         console.log(`🎯 Consensus threshold reached for "${word}" with ${votePercentage}% of votes or ${highConfidenceVotes.length} high confidence votes. Processing guess.`);
@@ -1485,15 +1822,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           turnUpdates = {
             currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
           };
-        } else if (
-          // Check if guessing team's own word (correct) but it's a neutral word or opponent's word
-          (team === "red" && !game.redTeam.includes(word)) ||
-          (team === "blue" && !game.blueTeam.includes(word))
-        ) {
-          // Still switch turn if it's the wrong team's word
-          turnUpdates = {
-            currentTurn: game.currentTurn === "red_turn" ? "blue_turn" : "red_turn"
-          };
+        } else if (result === "correct") {
+          // CRITICAL FIX: Do not change turn for correct guesses (team's own word)
+          // Just keep the current turn without adding turnUpdates
+          console.log(`✅ ${team} team guessed their own word correctly - continuing their turn`);
+          // No turnUpdates here - team keeps their turn
         }
         
         // Update game memory to track turn
@@ -1559,7 +1892,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const game = await storage.getGame(gameId);
       if (!game) return res.status(404).json({ error: "Game not found" });
 
-      const { message, team, triggerVoting, isVoting, voteType, forceMeta } = req.body;
+      const { message, team, triggerVoting, isVoting, voteType, forceMeta, pollId } = req.body;
 
       // Validate team
       if (!team || (team !== "red" && team !== "blue")) {
@@ -1571,6 +1904,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         p !== "human" && p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
       ) as AIModel[];
 
+      // CRITICAL FIX: Use provided pollId if available, otherwise create a new unique one
+      // Each meta decision should have a completely unique poll ID with specific timestamp
+      // to prevent poll unification
+      const metaDecisionPollId = pollId || `meta-${team}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+
+      console.log(`🔑 Creating meta discussion with unique poll ID: ${metaDecisionPollId}`);
+
       // Create a system message to prompt discussion or meta decision
       const discussionEntry = {
         team,
@@ -1581,7 +1921,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         isVoting: isVoting === true || forceMeta === true || triggerVoting === true,
         voteType: voteType || 'meta_decision',
         // Include meta options if this is a meta decision
-        metaOptions: ['continue', 'end_turn']
+        metaOptions: ['continue', 'end_turn'],
+        // Include the pollId to ensure all votes are tied to this specific decision
+        pollId: metaDecisionPollId
       };
 
       console.log(`📝 Creating meta discussion: isVoting=${discussionEntry.isVoting}, voteType=${discussionEntry.voteType}`);
@@ -1595,58 +1937,154 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const gameRoom = gameDiscussions.get(gameId);
       if (gameRoom) {
         console.log(`Broadcasting meta decision to ${gameRoom.clients.size} clients`);
+        // CRITICAL FIX: Filter clients by team membership to ensure each team only gets their own polls
         gameRoom.clients.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'discussion',
-              team,
-              player: 'Game',
-              content: discussionEntry.message,
-              message: discussionEntry.message, // Include for compatibility
-              timestamp: discussionEntry.timestamp,
-              isVoting: discussionEntry.isVoting,
-              voteType: discussionEntry.voteType,
-              metaOptions: discussionEntry.metaOptions
-            }));
+            // Get client connection info to check team
+            const connInfo = connections.get(client);
+            
+            // Only send meta discussion messages to clients on the same team
+            if (!connInfo || connInfo.team === team) {
+              client.send(JSON.stringify({
+                type: 'discussion',
+                team,
+                player: 'Game',
+                content: discussionEntry.message,
+                message: discussionEntry.message, // Include for compatibility
+                timestamp: discussionEntry.timestamp,
+                isVoting: discussionEntry.isVoting,
+                voteType: discussionEntry.voteType,
+                metaOptions: discussionEntry.metaOptions,
+                pollId: metaDecisionPollId // Pass the pollId to ensure client uses the same one
+              }));
+            }
           }
         });
       }
 
       // Trigger AI meta-votes if requested
-      if ((triggerVoting || forceMeta) && aiTeammates.length > 0) {
-        console.log(`🤖 Triggering AI meta votes for ${aiTeammates.length} teammates`);
+      if ((triggerVoting || forceMeta)) {
+        console.log(`🤖 Triggering meta votes for team ${team}`);
         
-        // Force System vote first to ensure voting appears in UI
+        // Each poll gets a UNIQUE POLL ID for complete independence
+        // This is CRITICAL to solve the unified polls issue
+        
+        // Initialize the UI with empty polls first for better UX
         setTimeout(() => {
-          fetch(`/api/games/${gameId}/meta/vote`, {
+          // Generate a unique poll ID for the "continue" option
+          const continuePollId = `meta-${team}-continue-${Date.now()}`;
+          
+          fetch(`http://localhost:${process.env.PORT || 3000}/api/games/${gameId}/meta/vote`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model: 'Game',
               team,
               action: 'continue', // Default system vote to continue
-              confidence: 0.6 // Lower confidence to not override human decisions
+              confidence: 0.05, // Very low confidence - placeholder only
+              pollId: continuePollId, // UNIQUE poll ID for the continue option
+              messageId: metaDecisionPollId, // Associate with the meta decision message
+              reasoning: "UI placeholder for team decision"
             })
           })
-          .catch(err => console.error(`Error creating system meta vote:`, err));
+          .catch(err => console.error(`Error creating continue vote:`, err));
+          
+          // Create independent end_turn poll
+          setTimeout(() => {
+            const endTurnPollId = `meta-${team}-end_turn-${Date.now() + 1}`;
+            
+            // Add a placeholder end turn option with 0 votes
+            fetch(`http://localhost:${process.env.PORT || 3000}/api/games/${gameId}/meta/vote`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: 'Game',
+                team,
+                action: 'end_turn',
+                confidence: 0.01, // Very low confidence
+                pollId: endTurnPollId, // UNIQUE poll ID for the end_turn option
+                messageId: metaDecisionPollId, // Associate with the meta decision message
+                reasoning: "UI placeholder for team decision"
+              })
+            })
+            .catch(err => console.error(`Error creating end_turn placeholder:`, err));
+          }, 100);
         }, 200);
         
-        // Then stagger AI votes for variety
-        aiTeammates.forEach((model, index) => {
-          setTimeout(() => {
-            // Make a decision - randomize for variety
-            fetch(`/api/games/${gameId}/meta/vote`, {
+        // Only proceed with AI votes if we have AI teammates
+        if (aiTeammates.length > 0) {
+          console.log(`🤖 Triggering AI meta votes for ${aiTeammates.length} teammates`);
+          
+          // Then stagger AI votes for variety
+          aiTeammates.forEach((model, index) => {
+            setTimeout(async () => {
+            // Use AI to make meta decisions instead of random choice
+            // First create the appropriate prompt for meta decision
+            const currentGame = await storage.getGame(gameId);
+            const currentClue = currentGame?.gameHistory
+              ?.filter(h => h.type === "clue" && h.turn === team)
+              ?.pop()?.content || "";
+            
+            // Get remaining team words
+            const teamWords = team === "red" ? currentGame?.redTeam : currentGame?.blueTeam;
+            const remainingTeamWords = teamWords?.filter(word => 
+              !currentGame?.revealedCards?.includes(word)
+            ).length || 0;
+            
+            // Current score
+            const teamScore = team === "red" ? currentGame?.redScore : currentGame?.blueScore;
+            const opponentScore = team === "red" ? currentGame?.blueScore : currentGame?.redScore;
+            
+            // Recent guesses
+            const guessesThisTurn = currentGame?.gameHistory?.filter(h => 
+              h.type === "guess" && 
+              h.turn === team && 
+              h.result === "correct" &&
+              h.timestamp > (currentGame.currentTurnStartTime?.getTime() || 0)
+            ).length || 0;
+            
+            // Use the new dedicated meta decision function
+            const { action, reasoning, confidence } = await getMetaDecision(
+              model as AIModel,
+              team as "red" | "blue",
+              currentClue ? { 
+                word: currentClue.split(' ')[0], 
+                number: parseInt(currentClue.match(/\((\d+)\)/)?.[1] || "1") 
+              } : { word: "", number: 1 },
+              currentGame?.teamDiscussion || [],
+              currentGame?.gameHistory || [],
+              currentGame?.words || [],
+              currentGame?.revealedCards || [],
+              guessesThisTurn,
+              { 
+                red: currentGame?.redScore || 0, 
+                blue: currentGame?.blueScore || 0 
+              },
+              gameId
+            );
+            
+            // Generate a unique poll ID for this specific AI's vote on this specific action
+            // This is CRITICAL for poll independence
+            const uniqueAiPollId = `meta-${team}-${action}-${model}-${Date.now()}`;
+            
+            // Submit the AI's vote with a unique poll ID
+            fetch(`http://localhost:${process.env.PORT || 3000}/api/games/${gameId}/meta/vote`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 model,
                 team,
-                action: Math.random() > 0.5 ? 'continue' : 'end_turn'
+                action,
+                pollId: uniqueAiPollId, // UNIQUE poll ID for this specific vote
+                messageId: metaDecisionPollId, // Associate with the meta decision message
+                reasoning: reasoning || `AI model ${model} decided to ${action}`,
+                confidence: confidence || 0.7
               })
             })
             .catch(err => console.error(`Error triggering meta vote for ${model}:`, err));
           }, index * 800 + 500);
-        });
+        }); // End of aiTeammates forEach
+        } // End of aiTeammates.length > 0 check
       }
 
       res.json({
@@ -1661,253 +2099,336 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Enhance meta vote handling to maintain poll isolation
   app.post("/api/games/:id/meta/vote", async (req, res) => {
     try {
-      const game = await storage.getGame(Number(req.params.id));
+      const gameId = Number(req.params.id);
+      const game = await storage.getGame(gameId);
       if (!game) return res.status(404).json({ error: "Game not found" });
 
-      const { model, team, action } = req.body;
-
-      if (!team) {
-        return res.status(400).json({ error: "Team is required" });
+      // Extract pollId from request - crucial for isolation
+      const { model, team, action, pollId, uniqueId } = req.body;
+      
+      // Ensure pollId is required
+      if (!pollId) {
+        return res.status(400).json({ error: "pollId is required for vote isolation" });
       }
       
-      if (!action || !["continue", "end_turn", "discuss_more"].includes(action)) {
-        return res.status(400).json({ error: "Invalid action" });
+      // ENHANCED TEAM VALIDATION: Ensure the voter is on the correct team
+      // Get team information 
+      const isRedTeam = team === "red";
+      const teamSpymaster = isRedTeam ? game.redSpymaster : game.blueSpymaster;
+      const teamPlayers = isRedTeam ? game.redPlayers : game.bluePlayers;
+      
+      // CRITICAL SECURITY: Check if model is actually on this team
+      // Parse model - might be "human" or "human#123456"
+      let baseModel = model;
+      if (typeof model === 'string' && model.includes('#')) {
+        baseModel = model.split('#')[0];
       }
       
-      // Enhanced to support forced turn changes
-      const highPriority = req.body.highPriority === true;
-      const forceTurnChange = req.body.forceTurnChange === true;
+      // Check if this model/player is on the team they're trying to vote for
+      const isTeamMember = teamPlayers?.includes(baseModel);
+      if (!isTeamMember) {
+        console.log(`⛔ Blocking vote from ${model} - not a member of ${team} team`);
+        return res.status(403).json({ 
+          success: false, 
+          message: `You cannot vote on ${team} team's decisions because you are not on that team`,
+          wrongTeam: true
+        });
+      }
       
-      // Log the high-priority and forced flags
-      if (highPriority || forceTurnChange) {
-        console.log(`⚠️ Received ${highPriority ? 'HIGH PRIORITY' : ''} ${forceTurnChange ? 'FORCED' : ''} meta vote`);
+      // Check if this model is the team's spymaster - if so, skip the vote
+      const isSpymaster = (model === teamSpymaster) || 
+                        (typeof model === 'string' && model.startsWith(teamSpymaster));
+      
+      if (isSpymaster) {
+        console.log(`⛔ Blocking vote from spymaster ${model} - spymasters are not allowed to vote`);
+        return res.status(200).json({ 
+          success: false, 
+          message: "Spymasters cannot vote on team decisions",
+          isSpymaster: true
+        });
       }
-
-      // Allow human votes without model validation
-      if (model !== 'human' && (!model || !VALID_MODELS.includes(model as AIModel))) {
-        return res.status(400).json({ error: "Invalid model" });
+      
+      // Check if this model has already voted on this specific poll
+      const existingVote = (game.metaVotes || []).find(v => 
+        v.team === team && 
+        v.pollId === pollId && 
+        v.player === model
+      );
+      
+      if (existingVote) {
+        return res.status(200).json({ 
+          success: true, 
+          message: "Vote already recorded",
+          pollId
+        });
       }
-
-      const currentTeamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
-      if (model !== 'human' && !currentTeamPlayers.includes(model)) {
-        return res.status(400).json({ error: "AI model is not part of the team" });
-      }
-
-      // Create a new meta vote entry
+      
+      // CRITICAL FIX: Keep the existing poll ID to ensure votes belong to the same poll
+      // Don't modify the poll ID or reuse it for different votes
+      const uniqueMetaPollId = pollId;
+      
+      // CRITICAL FIX: Always keep messageId linked to pollId for proper UI association
+      console.log(`📊 Processing meta vote: pollId=${pollId}, messageId=${req.body.messageId}, player=${model}`);
+      
+      // Create new vote with pollId and reasoning
       const newVote = {
         team,
         player: model,
         action,
+        pollId: uniqueMetaPollId, // Use enhanced unique poll ID
+        messageId: req.body.messageId || uniqueMetaPollId, // If messageId is missing, use pollId to ensure proper matching
         timestamp: Date.now(),
-        confidence: 0.8
+        reasoning: req.body.reasoning || "",
+        confidence: req.body.confidence || 0.7,
+        // Add to game log
+        addToLog: true // Flag to show in game log
       };
-
-      // Store meta votes (you might need to add a new field to the game schema)
-      const metaVotes = game.metaVotes || [];
-      const updatedMetaVotes = [...metaVotes, newVote];
       
-      await storage.updateGame(game.id, {
-        metaVotes: updatedMetaVotes
-      });
-
-      // Calculate voting metrics
-      const teamAIPlayers = currentTeamPlayers.filter(
-        (p: string) => p !== "human" && p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
+      // CRITICAL FIX: Implement immediate end turn if this vote is to end the turn
+      // This ensures meta voting for ending turn works correctly
+      let shouldEndTurn = false;
+      if (action === 'end_turn') {
+        // Check how many votes there are for ending the turn
+        const endTurnVotes = (game.metaVotes || [])
+          .filter(v => v.team === team && v.action === 'end_turn')
+          .length;
+          
+        // Include this new vote
+        const totalEndTurnVotes = endTurnVotes + 1;
+        
+        // Get total number of operatives
+        const teamPlayers = team === "red" ? game.redPlayers : game.bluePlayers;
+        const teamOperatives = teamPlayers.filter(p => p !== teamSpymaster).length;
+        
+        // If more than 50% of operatives vote to end turn, we should end the turn
+        shouldEndTurn = totalEndTurnVotes > teamOperatives / 2;
+        console.log(`🔍 Meta decision check: ${totalEndTurnVotes}/${teamOperatives} votes to end turn - should end: ${shouldEndTurn}`);
+      }
+      
+      // Update game state
+      // First create the historyEntry before using it
+      
+      // Get the current clue and how many words guessed correctly so far
+      const currentClue = game.gameHistory?.filter(h => h.type === "clue")?.pop();
+      const correctGuessesForClue = game.gameHistory?.filter(h => 
+        h.type === "guess" && 
+        h.result === "correct" && 
+        h.turn === team &&
+        h.relatedClue === currentClue?.content
+      ).length || 0;
+      
+      // Format the clue info for the history entry
+      const clueInfo = currentClue ? `(Clue: ${currentClue.content}, Correct guesses: ${correctGuessesForClue})` : '';
+      
+      // Get player name for cleaner display
+      const playerName = typeof model === 'string' ? model.split('#')[0] : model;
+      
+      // Ensure we have reasoning provided - use a default if none is available
+      const reasoning = req.body.reasoning || 
+        (action === 'continue' 
+          ? `${playerName} thinks there are more words to find safely.` 
+          : action === 'end_turn' 
+            ? `${playerName} believes it's too risky to continue guessing.`
+            : `${playerName} wants to discuss more before deciding.`);
+      
+      // Create a history entry with a clearer type field to ensure it's identified properly
+      const historyEntry = {
+        type: "meta_vote",
+        turn: team,
+        content: `Team Voting Decision: ${playerName} voted to ${action === 'continue' ? 'continue guessing' : action === 'end_turn' ? 'end the turn' : 'discuss more'}. ${clueInfo}`,
+        timestamp: Date.now(),
+        reasoning: reasoning, // Use validated reasoning
+        voteAction: action,
+        player: model,
+        relatedClue: currentClue?.content,
+        clueGuessCount: correctGuessesForClue,
+        pollId: pollId, // Include the poll ID for deduplication
+        // Add explicit flags for UI rendering - CRITICAL for showing reasoning in GameBoard
+        hasReasoning: true, // Flag to ensure UI knows reasoning exists
+        showReasoning: true, // Flag to encourage UI to show reasoning
+        isMetaDecision: true, // Add additional flag to explicitly identify as meta decision
+        // Add to gameHistory to ensure it appears in the game log
+        addToGameLog: true
+      };
+      
+      // Create a team discussion entry for the meta vote to ensure visibility
+      const discussionEntry = {
+        team: team,
+        player: 'Game',
+        message: `Team Voting Decision: ${playerName} voted to ${action === 'continue' ? 'continue guessing' : action === 'end_turn' ? 'end the turn' : 'discuss more'}.`,
+        timestamp: Date.now(),
+        isGameMessage: true,
+        isMetaVote: true
+      };
+      
+      let updates: any = {
+        metaVotes: [...(game.metaVotes || []), newVote],
+        gameHistory: [...(game.gameHistory || [])]
+      };
+      
+      // Make sure we don't have duplicate entries
+      const isDuplicateHistoryEntry = updates.gameHistory.some((entry: any) => 
+        entry.type === "meta_vote" && 
+        entry.player === model &&
+        entry.voteAction === action &&
+        entry.pollId === pollId
       );
       
-      const actionVotes = updatedMetaVotes.filter(v => v.team === team && v.action === action);
-      const voteCount = actionVotes.length;
-      
-      // Get actual team size (excluding spymaster)
-      const effectiveTeamSize = currentTeamPlayers.filter(p => 
-        p !== (team === "red" ? game.redSpymaster : game.blueSpymaster)
-      ).length;
-      
-      // Make the threshold easier to reach by weighting human votes more
-      const humanVoteCount = actionVotes.filter(v => v.player === 'human').length;
-      const aiVoteCount = voteCount - humanVoteCount;
-      
-      // Human votes count more than AI votes (weighting of 2)
-      const weightedVoteCount = aiVoteCount + (humanVoteCount * 2);
-      const totalVoters = Math.max(1, effectiveTeamSize);
-      
-      // Adjusted percentage calculation
-      const votePercentage = Math.round((weightedVoteCount / totalVoters) * 100);
-      
-      // Ensure at least 30% if there's any vote
-      const adjustedPercentage = voteCount > 0 ? Math.max(30, votePercentage) : 0;
-      
-      // Create a discussion message to show the vote in the chat
-      const voterNames = actionVotes.map(v => v.player).join(', ');
-      const discussionMessage = {
-        team,
-        player: 'Game',
-        message: `Meta vote for "${action}": ${voterNames} (${adjustedPercentage}%)`,
-        timestamp: Date.now()
-      };
-      
-      // Add discussion message to game
-      await storage.updateGame(game.id, {
-        teamDiscussion: [
-          ...(game.teamDiscussion || []),
-          discussionMessage
-        ]
-      });
-      
-      // Broadcast meta vote status to all clients
-      const gameRoom = gameDiscussions.get(game.id);
-      if (gameRoom) {
-        gameRoom.clients.forEach(client => {
-          if (client.readyState === WebSocket.OPEN) {
-            // Send meta vote data
-            client.send(JSON.stringify({
-              type: 'meta_vote',
-              action,
-              votes: voteCount,
-              totalVoters,
-              percentage: adjustedPercentage, // Use adjusted percentage
-              voters: actionVotes.map(v => ({ player: v.player, confidence: v.confidence || 0.8 })),
-              team,
-              timestamp: Date.now()
-            }));
-            
-            // Also send discussion message for the vote
-            client.send(JSON.stringify({
-              type: 'discussion',
-              team,
-              player: 'Game',
-              content: `Meta vote for "${action}": ${voterNames} (${adjustedPercentage}%)`,
-              message: `Meta vote for "${action}": ${voterNames} (${adjustedPercentage}%)`,
-              timestamp: Date.now()
-            }));
-          }
-        });
-      }
-
-      // ENHANCED META VOTING: Make timer expiration cause a turn change every time
-      const hasHumanVote = actionVotes.some(v => v.player === 'human');
-      const timerExpired = req.body.timerExpired === true;
-      const thresholdReached = adjustedPercentage >= 30; // Lower to 30% for quicker decisions
-      const hasGameVote = actionVotes.some(v => v.player === 'Game'); // System-initiated vote
-      
-      // Force action if: human voted, timer expired, or game system voted
-      const forceAction = hasHumanVote || hasGameVote || timerExpired;
-      
-      // Also allow high confidence meta votes
-      const highConfidenceVotes = actionVotes.filter(v => v.confidence >= 0.8);
-      const hasHighConfidence = highConfidenceVotes.length >= Math.max(1, Math.floor(totalVoters / 3));
-      
-      let shouldEndTurn = false;
-      let shouldContinue = false;
-      
-      // CRITICAL: If timer expired or this is a forced vote, always end the turn no matter what
-      if (timerExpired) {
-        console.log(`⏰ TIMER EXPIRED - Automatically ending ${team} team's turn`);
-        shouldEndTurn = true;
-      } else if (highPriority || forceTurnChange) {
-        // Special fast-path for prioritized end turn votes
-        console.log(`⚡ PRIORITY REQUEST - ${action === 'end_turn' ? 'Immediately ending turn' : 'Processing action'}`);
-        if (action === 'end_turn') {
-          shouldEndTurn = true;
-        } else if (action === 'continue') {
-          shouldContinue = true;
-        }
-      } else if (thresholdReached || forceAction || hasHighConfidence) {
-        // Normal path for regular votes that meet threshold
-        console.log(`🎮 Meta action "${action}" will be executed (${adjustedPercentage}% or automatic vote) with ${actionVotes.length} votes`);
-        if (action === 'end_turn') {
-          shouldEndTurn = true;
-        } else if (action === 'continue') {
-          shouldContinue = true;
-        }
+      // Only add if not a duplicate
+      if (!isDuplicateHistoryEntry) {
+        // Add the history entry we created earlier
+        updates.gameHistory.push(historyEntry);
+        console.log(`✅ Meta vote will be added to game history`);
+      } else {
+        console.log(`⚠️ Skipping duplicate meta vote in game history`);
       }
       
-      // Handle end turn action if consensus reached or timer expired
-      if (shouldEndTurn) {
-        const nextTurn = team === 'red' ? "blue_turn" : "red_turn";
+      // If we should end the turn based on meta votes, make the change immediately
+      if (shouldEndTurn && team === (game.currentTurn === "red_turn" ? "red" : "blue")) {
+        console.log(`🔄 ENDING TURN BASED ON META VOTE MAJORITY`);
         
-        // CRITICAL: Create all updates in a single transaction to prevent race conditions
-        const updates = {
-          currentTurn: nextTurn,
-          // Reset turn timer by updating current turn start time
-          currentTurnStartTime: new Date(),
-          // Add turn end to game history with reason
-          gameHistory: [
-            ...(game.gameHistory || []),
-            {
-              type: "turn_end",
-              turn: team,
-              content: timerExpired ? 
-                `${team.toUpperCase()} team's turn ended due to time expiration` :
-                `${team.toUpperCase()} team ended their turn by voting`,
-              timestamp: Date.now(),
-              // Add explicit forced flag for mandatory turn changes
-              forced: timerExpired
-            }
-          ]
+        // Change to opposite team's turn
+        const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+        const nextTeam = game.currentTurn === "red_turn" ? "blue" : "red";
+        const nextTurnState = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
+        
+        // Add these fields to the update
+        updates.currentTurn = nextTurnState;
+        updates.currentTurnStartTime = new Date(); // Reset timer for next team
+        
+        // Add a turn change message to game history
+        const turnChangeHistoryEntry = {
+          type: "turn_end",
+          turn: currentTeam,
+          content: `Team Voting Decision: ${currentTeam.toUpperCase()} team decided to end their turn.`,
+          timestamp: Date.now() + 1, // Add 1ms to ensure it shows after the meta vote
+          metaVoteResult: true
         };
         
-        // Apply all updates in a single database call
-        await storage.updateGame(game.id, updates);
+        // Add the turn change entry to game history
+        updates.gameHistory.push(turnChangeHistoryEntry);
         
-        // Log the turn change for debugging
-        console.log(`🔄 TURN CHANGED ${team} → ${team === 'red' ? 'blue' : 'red'}, reason: ${timerExpired ? 'timer_expired' : 'vote'}`);
+        // Add turn change message to team discussion
+        const turnChangeDiscussionEntry = {
+          team: currentTeam,
+          player: 'Game',
+          message: `Team Voting Decision result: Turn ended. ${nextTeam.toUpperCase()} team's turn now.`,
+          timestamp: Date.now() + 1,
+          isGameMessage: true,
+          isTurnChange: true
+        };
         
-        // Broadcast the turn change to all clients with a high-priority flag
-        if (gameRoom) {
-          const turnChangeMsg = {
+        // Add to team discussion
+        updates.teamDiscussion = [
+          ...(game.teamDiscussion || []),
+          discussionEntry,
+          turnChangeDiscussionEntry
+        ];
+      } else {
+        // Normal update without turn change - just add discussion entry
+        updates.teamDiscussion = [
+          ...(game.teamDiscussion || []),
+          discussionEntry
+        ];
+      }
+      
+      // Apply all updates 
+      await storage.updateGame(gameId, updates);
+      
+      // Log the entry we added to help with debugging
+      console.log(`📝 Added meta vote to game history with reasoning: "${reasoning.substring(0, 50)}..."`);
+      
+      // We already updated the game state above, no need for a second update
+      
+      // Broadcast with pollId for client-side isolation and enhanced context
+      const gameRoom = gameDiscussions.get(gameId);
+      if (gameRoom) {
+        // CRITICAL FIX: Make messageId and pollId consistent to ensure proper UI display
+        // Use the exact same messageId that was saved in the vote object
+        const messageIdToUse = newVote.messageId || uniqueMetaPollId;
+        
+        // Send message with explicitly including all fields
+        const metaVoteMessage = {
+          type: 'meta_vote',
+          team: team,
+          player: model,
+          action: action,
+          pollId: uniqueMetaPollId,
+          timestamp: Date.now(),
+          reasoning: newVote.reasoning,
+          confidence: newVote.confidence,
+          messageId: messageIdToUse, // Use the unified messageId for proper poll association
+          // Include game context for better voting display
+          gameContext: {
+            currentClue: currentClue?.content,
+            clueGuessCount: correctGuessesForClue,
+            gameScore: { red: game.redScore || 0, blue: game.blueScore || 0 }
+          },
+          voters: [{ 
+            player: model, 
+            confidence: newVote.confidence || 0.7,
+            reasoning: newVote.reasoning,
+            // Add base model name for cleaner display
+            baseModel: typeof model === 'string' && model.includes('#') ? model.split('#')[0] : model
+          }]
+        };
+        
+        console.log(`📣 Broadcasting meta vote with poll=${uniqueMetaPollId}, messageId=${messageIdToUse}`);
+        
+        
+        // If we ended the turn, also broadcast a turn change message
+        if (shouldEndTurn && team === (game.currentTurn === "red_turn" ? "red" : "blue")) {
+          const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+          const nextTeam = game.currentTurn === "red_turn" ? "blue" : "red";
+          
+          // Broadcast turn change to all clients
+          const turnChangeMessage = {
             type: 'turn_change',
-            from: team,
-            to: team === 'red' ? 'blue' : 'red',
-            reason: timerExpired ? 'time_expired' : 'vote',
-            timestamp: Date.now(),
-            // Add high-priority flag for timer expiration
-            highPriority: timerExpired,
-            forced: timerExpired
+            from: currentTeam,
+            to: nextTeam,
+            reason: 'team_vote',
+            timestamp: Date.now() + 1,
+            forced: true
           };
           
-          // Convert to string once for efficiency
-          const msgStr = JSON.stringify(turnChangeMsg);
-          
-          // Send to all clients
           gameRoom.clients.forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
-              client.send(msgStr);
+              // First send the meta vote
+              client.send(JSON.stringify(metaVoteMessage));
+              
+              // Then send the turn change notification
+              setTimeout(() => {
+                if (client.readyState === WebSocket.OPEN) {
+                  client.send(JSON.stringify(turnChangeMessage));
+                }
+              }, 100); // Small delay to ensure proper order
             }
           });
-          
-          // For timer expiration, send a duplicate notification to ensure it's processed
-          if (timerExpired) {
-            setTimeout(() => {
-              // Include a slightly modified timestamp to ensure it's processed as a new message
-              const followupMsg = {
-                ...turnChangeMsg,
-                timestamp: Date.now() + 1,
-                followup: true
-              };
-              
-              gameRoom.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                  client.send(JSON.stringify(followupMsg));
-                }
-              });
-            }, 500); // Send follow-up after short delay
-          }
+        } else {
+          // Just send the meta vote message
+          gameRoom.clients.forEach(client => {
+            // Only send to clients in the same team
+            const connInfo = connections.get(client);
+            if (!connInfo || connInfo.team === team) {
+              client.send(JSON.stringify(metaVoteMessage));
+            }
+          });
         }
       }
-
-      res.json({
-        vote: newVote,
-        voteCount,
-        totalVoters,
-        percentage: votePercentage,
-        action: shouldEndTurn ? 'turn_ended' : shouldContinue ? 'continuing' : 'vote_recorded'
+      
+      res.json({ 
+        success: true, 
+        pollId: uniqueMetaPollId,
+        action,
+        reasoning: newVote.reasoning,
+        player: model 
       });
-    } catch (error: any) {
-      console.error("Error in meta vote:", error);
-      res.status(500).json({ error: error.message });
+    } catch (error) {
+      console.error("Error processing meta vote:", error);
+      res.status(500).json({ error: "Failed to process vote" });
     }
   });
 
@@ -1915,6 +2436,76 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const game = await storage.getGame(Number(req.params.id));
       if (!game) return res.status(404).json({ error: "Game not found" });
+
+      // Determine the current team based on game state
+      const currentTeam = game.currentTurn?.startsWith('red') ? 'red' : 'blue';
+      const currentSpymaster = currentTeam === 'red' ? game.redSpymaster : game.blueSpymaster;
+      
+      // Track if we've modified the game state
+      let gameModified = false;
+
+      // Check if we need to trigger team discussion first
+      if (game.pendingTeamDiscussion === true) {
+        // Clear the pending discussion flag
+        await storage.updateGame(game.id, {
+          pendingTeamDiscussion: false
+        });
+        
+        // Force team discussion phase through WebSocket
+        const gameRoom = gameDiscussions.get(game.id);
+        if (gameRoom) {
+          gameRoom.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'discussion',
+                team: currentTeam,
+                player: 'Game',
+                message: `${currentTeam.toUpperCase()} team, discuss your strategy...`,
+                timestamp: Date.now()
+              }));
+            }
+          });
+        }
+        
+        gameModified = true;
+      }
+      // Check if this is a new turn with no clue given yet
+      else if (!game.pendingTeamDiscussion && !game.currentClue && game.gameState === 'playing') {
+        // Check if there's a recent spymaster clue in the game history or team discussion
+        const hasRecentClue = game.gameHistory?.some(entry => 
+          entry.type === 'clue' && 
+          entry.turn === currentTeam && 
+          entry.timestamp > Date.now() - 30000
+        );
+        
+        if (!hasRecentClue) {
+          console.log(`🔍 No recent clue found for ${currentTeam} team, triggering spymaster`);
+          
+          // Trigger the spymaster to give a clue
+          try {
+            const clue = await getSpymasterClue(
+              game.id,
+              currentTeam as "red" | "blue",
+              currentSpymaster as AIModel,
+              game
+            );
+            
+            // Mark that a change was made
+            gameModified = true;
+            
+            console.log(`🔍 Spymaster ${currentSpymaster} gave clue: ${clue.word} (${clue.number})`);
+          } catch (error) {
+            console.error("Error getting spymaster clue:", error);
+          }
+        }
+      }
+      
+      // If we modified the game, get the updated version
+      if (gameModified) {
+        const updatedGame = await storage.getGame(Number(req.params.id));
+        return res.json(updatedGame || game);
+      }
+      
       res.json(game);
     } catch (error: any) {
       res.status(500).json({ error: error.message });

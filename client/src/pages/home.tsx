@@ -12,6 +12,7 @@ import { SiOpenai, SiAnthropic, SiGooglegemini, SiX } from "react-icons/si"
 import { Bot } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { createInitialGame } from "@/lib/game"
+import { motion } from "framer-motion"
 
 // AI models available in the game
 const AI_MODELS = [
@@ -185,9 +186,27 @@ export default function HomePage() {
     <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col items-center justify-center p-4">
       <Card className="w-full max-w-4xl bg-white/95 backdrop-blur shadow-xl">
         <CardHeader className="text-center border-b pb-6">
-          <CardTitle className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-red-600 text-transparent bg-clip-text">
+          <motion.div
+            className="text-4xl font-bold relative py-1"
+            initial={{ backgroundPosition: "0% 50%" }}
+            animate={{ 
+              backgroundPosition: ["0% 50%", "100% 50%", "0% 50%"]
+            }}
+            transition={{ 
+              duration: 15, 
+              repeat: Infinity,
+              ease: "linear"
+            }}
+            style={{
+              backgroundSize: "400% 100%",
+              backgroundImage: "linear-gradient(90deg, #3b82f6, #ef4444, #3b82f6)",
+              WebkitBackgroundClip: "text",
+              backgroundClip: "text",
+              color: "transparent"
+            }}
+          >
             Codenames AI
-          </CardTitle>
+          </motion.div>
           <CardDescription className="text-lg mt-2">Choose your AI teammates and start playing!</CardDescription>
         </CardHeader>
 

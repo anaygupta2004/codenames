@@ -9,8 +9,10 @@ export function useGame(gameId?: number) {
   const cleanupRef = useRef(false);
   const reconnectAttempts = useRef(0);
   const MAX_RECONNECT_ATTEMPTS = 3;
+  // Generate a 5-digit player ID for each client
   const clientId = useRef(localStorage.getItem('clientId') || (() => {
-    const newId = Math.random().toString(36).substring(7);
+    // Generate a 5-digit random number between 10000 and 99999
+    const newId = Math.floor(10000 + Math.random() * 90000).toString();
     localStorage.setItem('clientId', newId);
     return newId;
   })());
@@ -372,35 +374,86 @@ const connect = useCallback(() => {
             if (data.result === 'correct') {
               console.log(`✅ CORRECT GUESS DETECTED - AUTO-CREATING META DECISION`);
               
-              // Create meta decision message
-              const metaDecisionMsg = {
-                team: data.team,
-                player: 'Game' as const,
-                message: "Team must decide: continue guessing or end turn?",
-                timestamp: (data.timestamp || Date.now()) + 100, // Ensure it appears after the guess
-                isVoting: true,
-                voteType: 'meta_decision',
-                metaOptions: ['continue', 'end_turn']
-              };
+              // Create a unique meta decision ID that includes the guess word to prevent duplicates
+              const metaDecisionId = `meta-${data.team}-${data.word || data.content}-${data.timestamp || Date.now()}`;
               
-              // Add the meta decision to the discussion
-              newState.teamDiscussion.push(metaDecisionMsg);
+              // Store this ID in localStorage to prevent duplicate meta decisions
+              const existingDecisions = JSON.parse(localStorage.getItem('recentMetaDecisions') || '[]');
               
-              // Request AI models to participate
-              setTimeout(() => {
-                fetch(`/api/games/${prev.id}/meta/discuss`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    message: "Should we continue guessing or end turn?",
-                    team: data.team,
-                    triggerVoting: true,
-                    isVoting: true,
-                    voteType: 'meta_decision',
-                    forceMeta: true
-                  })
-                }).catch(err => console.error("Error creating meta decision after correct guess:", err));
-              }, 300);
+              // More strict check for duplicate meta decisions - consider a decision a duplicate if:
+              // 1. It's for the same team AND
+              // 2. It's within the last 20 seconds AND
+              // 3. There's already ANY meta decision poll for this team
+              const isDuplicate = existingDecisions.some((decision: any) => 
+                // Same team
+                decision.team === data.team && 
+                // Recent - increased from 10s to 20s for better deduplication
+                (Date.now() - decision.timestamp < 20000)
+              );
+              
+              // Extra safety check: also mark as duplicate if there's already a meta decision in the discussion
+              const hasExistingMetaDecision = prev.teamDiscussion?.some(msg => 
+                msg.team === data.team && 
+                msg.isVoting === true && 
+                msg.voteType === 'meta_decision' &&
+                // Only consider recent meta decisions (within the last 30 seconds)
+                (Date.now() - (msg.timestamp || 0)) < 30000
+              );
+              
+              if (hasExistingMetaDecision) {
+                console.log(`⚠️ Active meta decision already exists for team ${data.team} - skipping duplicate`);
+              }
+              
+              if (!isDuplicate && !hasExistingMetaDecision) {
+                // Track this decision to prevent duplicates
+                existingDecisions.push({
+                  id: metaDecisionId,
+                  team: data.team,
+                  word: data.word || data.content,
+                  timestamp: Date.now()
+                });
+                
+                // Keep only the 5 most recent decisions
+                if (existingDecisions.length > 5) {
+                  existingDecisions.shift();
+                }
+                
+                localStorage.setItem('recentMetaDecisions', JSON.stringify(existingDecisions));
+                
+                // Create meta decision message
+                const metaDecisionMsg = {
+                  team: data.team,
+                  player: 'Game' as const,
+                  message: "Team must decide: continue guessing or end turn?",
+                  timestamp: (data.timestamp || Date.now()) + 100, // Ensure it appears after the guess
+                  isVoting: true,
+                  voteType: 'meta_decision',
+                  metaOptions: ['continue', 'end_turn'],
+                  pollId: metaDecisionId // Use consistent ID to prevent duplicates
+                };
+                
+                // Add the meta decision to the discussion
+                newState.teamDiscussion.push(metaDecisionMsg);
+                
+                // Request AI models to participate
+                setTimeout(() => {
+                  fetch(`/api/games/${prev.id}/meta/discuss`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      message: "Should we continue guessing or end turn?",
+                      team: data.team,
+                      triggerVoting: true,
+                      isVoting: true,
+                      voteType: 'meta_decision',
+                      forceMeta: true,
+                      pollId: metaDecisionId // Include consistent poll ID
+                    })
+                  }).catch(err => console.error("Error creating meta decision after correct guess:", err));
+                }, 300);
+              } else {
+                console.log(`⚠️ Skipping duplicate meta decision for team ${data.team}`);
+              }
             }
           }
           else if (data.type === 'word_votes') {
@@ -460,9 +513,69 @@ const connect = useCallback(() => {
                   player: voter.player,
                   action: data.action,
                   timestamp: data.timestamp || Date.now(),
-                  confidence: voter.confidence || 0.5
+                  confidence: voter.confidence || 0.5,
+                  reasoning: voter.reasoning || "",
+                  pollId: data.pollId, // Ensure pollId is included
+                  messageId: data.messageId, // Add messageId for more reliable matching
+                  baseModel: voter.baseModel || voter.player // Include base model for icon display
                 };
-                voteMap.set(`${voter.player}-${data.action}`, newVote);
+                // CRITICAL FIX: Handle unique model IDs correctly
+                // Extract base model for proper deduplication
+                let baseModelPlayer = voter.player;
+                
+                // Extract base model from any format
+                if (typeof baseModelPlayer === 'string') {
+                  if (baseModelPlayer.includes('#')) {
+                    baseModelPlayer = baseModelPlayer.split('#')[0];
+                  } else if (baseModelPlayer.includes('-')) {
+                    const possibleModels = ['gpt-4o', 'claude-3-5-sonnet-20241022', 'grok-2-1212', 'gemini-1.5-pro', 'llama-7b'];
+                    for (const model of possibleModels) {
+                      if (baseModelPlayer.startsWith(model)) {
+                        baseModelPlayer = model;
+                        break;
+                      }
+                    }
+                  }
+                }
+                
+                // Use base model name for deduplication in the vote map
+                voteMap.set(`${baseModelPlayer}-${data.action}`, newVote);
+                
+                // Add each meta vote to game history with player reasoning
+                const playerName = typeof voter.player === 'string' && voter.player.includes('#') 
+                  ? voter.player.split('#')[0] 
+                  : voter.player;
+                
+                // Add meta vote entry to game history with enhanced fields to ensure it's displayed
+                const historyEntry = {
+                  type: "meta_vote",
+                  turn: data.team,
+                  content: `${playerName} voted to ${data.action === 'continue' ? 'continue guessing' : 'end turn'}`,
+                  timestamp: data.timestamp || Date.now(),
+                  reasoning: voter.reasoning || "",
+                  player: voter.player,
+                  word: data.action, // Store the action in the word field for rendering
+                  voteAction: data.action
+                };
+                
+                console.log("✅ Adding meta vote to game history:", historyEntry);
+                
+                // Add to game history
+                if (!newState.gameHistory) {
+                  newState.gameHistory = [];
+                }
+                
+                // Check if this entry is a duplicate before adding
+                const isDuplicate = newState.gameHistory.some(entry => 
+                  entry.type === "meta_vote" && 
+                  entry.player === voter.player &&
+                  entry.voteAction === data.action &&
+                  Math.abs((entry.timestamp || 0) - (data.timestamp || Date.now())) < 5000 // Within 5 seconds
+                );
+                
+                if (!isDuplicate) {
+                  newState.gameHistory.push(historyEntry);
+                }
               });
               
               newState.metaVotes = Array.from(voteMap.values());
@@ -523,15 +636,43 @@ const connect = useCallback(() => {
               highPriority: data.highPriority || data.forced || data.reason === 'time_expired'
             });
             
-            // CRITICAL: For timer expiration and other forced turn changes, we need to ensure
-            // the client state is fully reset for the new turn
-            if (data.reason === 'time_expired' || data.highPriority || data.forced) {
-              console.log('🚨 FORCED TURN CHANGE - Resetting client state');
+            // CRITICAL: We need to ensure we maintain any pending meta decisions
+            // while clearing old meta votes that are no longer relevant
+            console.log('🔄 TURN CHANGE - Selectively resetting meta votes');
+            
+            // IMPROVED: Only clear votes for the team whose turn is ending
+            // This prevents interrupting ongoing meta decisions and ensures they get resolved
+            console.log(`🧹 Selective poll reset - only clearing polls for team ${data.from}`);
+            
+            // Get any active meta polls for the team whose turn is starting
+            const activeMetaPolls = Array.isArray(prev.metaVotes) 
+              ? prev.metaVotes.filter(vote => 
+                  // Keep votes for the team whose turn is starting
+                  vote.team === data.to &&
+                  // Only keep votes that are from the last 60 seconds (active decisions)
+                  (Date.now() - (vote.timestamp || 0)) < 60000
+                )
+              : [];
               
-              // Clear any active votes or discussions as the turn has forcibly ended
-              newState.metaVotes = newState.metaVotes?.filter(v => v.team !== data.from) || [];
-              newState.consensusVotes = newState.consensusVotes?.filter(v => v.team !== data.from) || [];
-            }
+            // Keep any active meta votes for the team whose turn is starting
+            // but clear votes for the team whose turn is ending
+            newState.metaVotes = activeMetaPolls;
+            
+            console.log(`🔍 Keeping ${activeMetaPolls.length} active meta votes for team ${data.to}`);
+            
+            // Reset consensus votes to prevent old votes from affecting new turns
+            // This ensures complete poll individualization between turns too
+            newState.consensusVotes = prev.consensusVotes?.filter(vote => vote.team === data.to) || [];
+            
+            // Process in voting component - but keep messages for the incoming team
+            processedMessages.current = new Set();
+            
+            // Store the change in localStorage to help other components be aware
+            localStorage.setItem('lastTurnChange', Date.now().toString());
+            localStorage.setItem('currentTurn', data.to);
+            
+            // Log the turn change and state updates
+            console.log(`Turn changed from ${data.from} to ${data.to}. ALL polls have been reset.`);
           }
 
           console.log('📝 New state after update:', {
@@ -670,5 +811,40 @@ const connect = useCallback(() => {
     });
   }, [game]);
 
-  return { game, clientId, wsRef };
+  // Helper function to find the active poll ID for a team
+  const getActiveMetaPollId = useCallback((teamColor: 'red' | 'blue') => {
+    if (!game || !game.teamDiscussion) return null;
+    
+    // Find the most recent meta decision poll for this team
+    const metaDecisions = game.teamDiscussion
+      .filter(entry => 
+        entry.team === teamColor && 
+        entry.isVoting === true && 
+        entry.voteType === 'meta_decision'
+      )
+      .sort((a, b) => b.timestamp - a.timestamp);
+    
+    // If we found a meta decision, return its pollId or generate one
+    if (metaDecisions.length > 0) {
+      const latestPoll = metaDecisions[0];
+      
+      // Return the pollId if it exists
+      if (latestPoll.pollId) {
+        console.log(`🔍 Found active poll ID: ${latestPoll.pollId} for team ${teamColor}`);
+        return latestPoll.pollId;
+      }
+      
+      // Generate a stable pollId based on the entry
+      const messageFragment = latestPoll.message?.substring(0, 10) || '';
+      const generatedPollId = `meta-${teamColor}-${latestPoll.timestamp}-${latestPoll.player}-${messageFragment}`;
+      console.log(`🔧 Generated poll ID: ${generatedPollId} for team ${teamColor}`);
+      return generatedPollId;
+    }
+    
+    // No active poll found
+    console.log(`⚠️ No active poll found for team ${teamColor}`);
+    return null;
+  }, [game]);
+
+  return { game, clientId, wsRef, getActiveMetaPollId };
 } 
