@@ -53,10 +53,11 @@ export type TeamDiscussionEntry = {
   risk?: RiskLevel;
   round?: number;
   isVoting?: boolean;
-  voteType?: "continue" | "end_turn";
+  voteType?: "continue" | "end_turn" | "meta_decision" | "meta";
   voteResult?: boolean;
-  action?: "vote" | "continue" | "end_turn" | "discuss_more";
+  action?: "vote" | "continue" | "end_turn";
   content?: string;
+  pollId?: string;  // Add pollId for meta voting consistency
   timeInfo?: {
     turnStartTime: number;
     turnTimeLimit: number;
@@ -68,21 +69,27 @@ export type ConsensusLevel = "High" | "Medium" | "Low" | "None";
 
 export type ConsensusVote = {
   team: "red" | "blue";
-  player: AIModel | "human";
+  player: AIModel | "human" | string; // Supports model#uniqueId format
   word: string;
   approved: boolean;
   confidence: number;
   timestamp: number;
   reason?: string;
   relatedClue?: string; // Reference to the clue that this vote is for
+  clueGuessCount?: number; // Number of guesses already made with related clue
+  remainingScore?: number; // Score needed to win
+  gameScore?: { red: number, blue: number }; // Current score
 };
 
 export type MetaVote = {
   team: "red" | "blue";
-  player: AIModel | "human";
-  action: "continue" | "end_turn" | "discuss_more";
+  player: AIModel | "human" | string; // Now supports model#uniqueId format
+  action: "continue" | "end_turn";
   timestamp: number;
   confidence: number;
+  pollId: string; // Required field for consistency
+  messageId?: string; // Add messageId for reliable message-to-vote mapping
+  reasoning?: string; // Add reasoning from the model's decision
 };
 
 export const insertGameSchema = z.object({

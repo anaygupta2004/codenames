@@ -13,6 +13,7 @@ import { AlertCircle, CheckCircle2, XCircle, Clock, Timer, Bot } from "lucide-re
 import { SiOpenai, SiAnthropic, SiGooglegemini, SiX } from "react-icons/si";
 import { storage } from "@/lib/storage";
 import { motion } from "framer-motion";
+import { MetaPoll } from "@/components/MetaPoll";
 
 // Update AI model display info with correct icon components
 const AI_MODEL_INFO = {
@@ -218,6 +219,9 @@ export default function GamePage() {
   // Add this state variable near the other state hooks
   const [highlightGameWords, setHighlightGameWords] = useState(false);
 
+  // Add this state near your other state hooks
+  const [expandedReasonings, setExpandedReasonings] = useState<Record<string, boolean>>({});
+
   // Query hook
   const { data: game, isLoading, isError } = useQuery<Game>({
     queryKey: [`/api/games/${id}`],
@@ -225,6 +229,73 @@ export default function GamePage() {
     refetchIntervalInBackground: true
   });
 
+  // Define formatMessage at component level, before it's used
+  const formatMessage = (message: string, forceHighlight: boolean = false) => {
+    if (!message) return "";
+    
+    // First handle line breaks and spaces
+    let formatted = message;
+    
+    // Handle different types of line break notations
+    formatted = formatted.replace(/\/n/g, '<br/>');
+    formatted = formatted.replace(/\\n/g, '<br/>');
+    formatted = formatted.replace(/\n/g, '<br/>');
+    
+    // Replace multiple spaces with &nbsp;
+    formatted = formatted.replace(/ {2,}/g, (match) => {
+      return '&nbsp;'.repeat(match.length);
+    });
+    
+    // If word highlighting is enabled OR forceHighlight is true, highlight game words
+    if ((highlightGameWords || forceHighlight) && game) {
+      // Process all game words
+      game.words.forEach(gameWord => {
+        // Determine highlight color based on word type
+        let highlightClass = '';
+        
+        if (game.redTeam.includes(gameWord)) {
+          highlightClass = 'background-color:#ffcccc;';
+        } else if (game.blueTeam.includes(gameWord)) {
+          highlightClass = 'background-color:#cce5ff;';
+        } else if (game.assassin === gameWord) {
+          highlightClass = 'background-color:#333;color:white;';
+        } else {
+          // Neutral word
+          highlightClass = 'background-color:#f5f5dc;';
+        }
+        
+        // Always keep text bold but maintain its natural color (except for assassin)
+        const style = `${highlightClass}font-weight:bold;padding:0 3px;border-radius:3px;`;
+        
+        // Create patterns that explicitly match the word in various formats
+        // This will allow us to properly handle formatting characters
+        
+        // 1. Match **WORD** pattern (markdown bold)
+        const boldPattern = new RegExp(`\\*\\*(${gameWord})\\*\\*`, 'gi');
+        formatted = formatted.replace(boldPattern, `<span style="${style}">${gameWord}</span>`);
+        
+        // 2. Match 'WORD' pattern (single quotes)
+        const singleQuotePattern = new RegExp(`'(${gameWord})'`, 'gi');
+        formatted = formatted.replace(singleQuotePattern, `<span style="${style}">${gameWord}</span>`);
+        
+        // 3. Match "WORD" pattern (double quotes)
+        const doubleQuotePattern = new RegExp(`"(${gameWord})"`, 'gi');
+        formatted = formatted.replace(doubleQuotePattern, `<span style="${style}">${gameWord}</span>`);
+        
+        // 4. Finally, match standalone word with word boundaries
+        // But be careful not to match parts of already highlighted spans
+        const plainWordPattern = new RegExp(`(?<!<[^>]*)\\b(${gameWord})\\b(?![^<]*>)`, 'gi');
+        formatted = formatted.replace(plainWordPattern, `<span style="${style}">${gameWord}</span>`);
+      });
+    }
+    
+    // AFTER word highlighting, handle other formatting like bold text
+    // Replace double asterisks with bold tags (if not already highlighted)
+    formatted = formatted.replace(/\*\*([^<>]*?)\*\*/g, '<strong>$1</strong>');
+    
+    return formatted;
+  };
+  
   // All useEffect hooks - must be defined before any conditional returns
   // WebSocket connection
   useEffect(() => {
@@ -249,6 +320,27 @@ export default function GamePage() {
         try {
           const data = JSON.parse(event.data);
           console.log('Received WebSocket message:', data);
+          
+          // CRITICAL FIX: Handle meta_vote messages for game log
+          if (data.type === 'meta_vote') {
+            console.log('Received meta vote message:', data);
+            
+            // CRITICAL: Validate and ensure team is correctly set
+            // Use the team explicitly from the data, with fallback to current game team
+            const metaVoteTeam = data.team || (game?.currentTurn === "red_turn" ? "red" : "blue");
+            console.log(`📊 Adding meta vote for team: ${metaVoteTeam}, action: ${data.action}`);
+            
+            // Add meta vote to game log with explicit team attribution
+            setGameLog(prev => [...prev, {
+              team: metaVoteTeam, // Use validated team
+              action: `${data.player} voted to ${data.action === 'continue' ? 'continue guessing' : 'end turn'}`,
+              type: "meta_vote",
+              player: data.player,
+              reasoning: data.reasoning,
+              timestamp: data.timestamp || Date.now(), // Ensure timestamp exists
+              voteAction: data.action // Add explicit vote action for UI display
+            }]);
+          }
 
           if (data.type === 'discussion') {
             // Create the new discussion entry with all required fields
@@ -704,7 +796,8 @@ export default function GamePage() {
     }
   });
 
-  // Double-reinforced timer expiration handler for mandatory turn changes
+  // CRITICAL FIX: Double-reinforced timer expiration handler for mandatory turn changes
+  // This will change turns when time expires regardless of whether the team guessed correctly or not
   useEffect(() => {
     // Only execute when the timer reaches zero and there's an active game
     if (!game || turnTimer !== 0 || game.gameState?.includes("win")) return;
@@ -722,6 +815,7 @@ export default function GamePage() {
     console.log(`🚨 SENDING MULTIPLE REDUNDANT TURN CHANGE REQUESTS FOR RELIABILITY`);
     
     // 1. Send meta vote with timer expiration flag FIRST - most reliable way
+    // This will override any "continue guessing" decision since time has run out
     const metaVotePromise = fetch(`/api/games/${id}/meta/vote`, {
       method: 'POST',
       headers: {
@@ -1012,6 +1106,9 @@ export default function GamePage() {
         setIsVotingActive(true);
         setVotingInProgress(true);
         
+        // Create a unique and consistent poll ID for this meta decision
+        const metaPollId = `meta-${currentTeam}-${Date.now()}-decision`;
+        
         // Add a meta decision entry with explicit voting flags
         const metaDecisionMsg = {
           team: currentTeam,
@@ -1020,7 +1117,9 @@ export default function GamePage() {
           timestamp: Date.now(),
           isVoting: true, // CRITICAL: Mark as voting message
           voteType: 'meta_decision',
-          metaOptions: ['continue', 'end_turn']
+          metaOptions: ['continue', 'end_turn'],
+          pollId: metaPollId, // CRITICAL: Add explicit poll ID for easy matching with votes
+          messageId: metaPollId // Also use same ID as messageId for redundancy
         };
         
         // Add to local discussion IMMEDIATELY
@@ -1039,7 +1138,10 @@ export default function GamePage() {
             socketRef.current.send(JSON.stringify({
               ...metaDecisionMsg,
               type: 'discussion',
-              gameId: Number(id)
+              gameId: Number(id),
+              // Ensure poll ID and message ID are included in WebSocket message
+              pollId: metaPollId,
+              messageId: metaPollId
             }));
           }
           
@@ -1050,7 +1152,11 @@ export default function GamePage() {
             body: JSON.stringify({
               message: "Should we continue guessing or end turn?",
               team: currentTeam,
-              triggerVoting: true
+              triggerVoting: true,
+              pollId: metaPollId, // Add explicit pollId for consistent vote grouping
+              messageId: metaPollId, // Also use same ID as messageId for redundancy
+              isVoting: true,
+              voteType: 'meta_decision'
             })
           }).catch(err => console.error("Error triggering AI meta vote:", err));
           
@@ -1062,9 +1168,10 @@ export default function GamePage() {
         }, 500);
       }
       
-      // STRICT TURN CHANGE: Immediately change turns for wrong guesses, opponent's words, or assassin
+      // CRITICAL FIX: Turn only changes when guessing wrong words (neutral/opponent/assassin)
+      // For correct guesses, we show meta-voting to let team decide to continue or end turn
       if (!isCorrectTeamWord || isNeutralWord || isOpponentTeamWord || isAssassin) {
-        console.log(`🔄 IMMEDIATE turn switch after ${result} guess`);
+        console.log(`🔄 IMMEDIATE turn switch after ${result} guess (wrong/opponent/neutral/assassin)`);
         
         // Special handling for assassin (set game state)
         if (isAssassin) {
@@ -1084,18 +1191,21 @@ export default function GamePage() {
           turnChangeReason = 'neutral_word';
         }
         
-        // Use shared turn change handler
+        // Use shared turn change handler for incorrect guesses only
         handleTurnChange(turnChangeReason);
       } else {
-        // SIMPLIFIED: For correct guesses, show meta-voting without buttons, similar to word voting
-        console.log("✅ Correct guess! Initiating meta decision flow");
+        // CRITICAL FIX: For correct guesses, team continues their turn 
+        // BUT we show meta-voting to let them choose to end their turn or continue
+        console.log("✅ Correct guess! Team continues their turn with meta decision option");
         
-        // Create an informational message about the correct guess
+        // Create an enhanced informational message about the correct guess with animations
         const successMsg = {
           team: currentTeam,
           player: 'Game',
-          message: `✓ Correct guess! Your team gets a point.`,
-          timestamp: Date.now()
+          message: `✅ CORRECT GUESS! "${word}" was a ${currentTeam.toUpperCase()} team card. Your team gets a point.`,
+          timestamp: Date.now(),
+          animate: true, // Add animation flag for special styling
+          cardType: currentTeam // To show the color of the card
         };
         
         // Send via WebSocket and update local state
@@ -1108,6 +1218,30 @@ export default function GamePage() {
         }
         
         setLocalDiscussion(prev => [...prev, successMsg]);
+        
+        // Add a small delay before showing the meta decision to ensure users see the correct guess confirmation
+        setTimeout(() => {
+          // Additional clarification that team must now decide what to do
+          const decisionPromptMsg = {
+            team: currentTeam,
+            player: 'Game',
+            message: `Team must now decide whether to continue guessing or end the turn.`,
+            timestamp: Date.now() + 100,
+            isVoting: true,
+            leadToMetaVote: true // Flag to indicate this will lead to a meta vote
+          };
+          
+          // Send via WebSocket and update local state
+          if (socketRef.current?.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              ...decisionPromptMsg,
+              type: 'discussion',
+              gameId: Number(id)
+            }));
+          }
+          
+          setLocalDiscussion(prev => [...prev, decisionPromptMsg]);
+        }, 1000);
         
         // Reset word votes
         setVotedOnWords({});
@@ -1270,6 +1404,9 @@ export default function GamePage() {
           }).catch(err => console.error("Error submitting end turn recommendation:", err));
         }
         
+        // Create a unique and consistent poll ID for this meta decision
+        const metaPollId = `meta-${currentTeam}-${Date.now()}-decision-2`;
+        
         // Add a meta decision entry with explicit voting flags
         const metaDecisionMsg = {
           team: currentTeam,
@@ -1278,7 +1415,9 @@ export default function GamePage() {
           timestamp: Date.now() + 2,
           isVoting: true, // CRITICAL: Mark as voting message
           voteType: 'meta_decision',
-          metaOptions: ['continue', 'end_turn'] // Used by the renderMessage function
+          metaOptions: ['continue', 'end_turn'], // Used by the renderMessage function
+          pollId: metaPollId, // CRITICAL: Add explicit poll ID for easy matching with votes 
+          messageId: metaPollId // Also use same ID as messageId for redundancy
         };
         
         setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
@@ -1288,7 +1427,9 @@ export default function GamePage() {
           socketRef.current.send(JSON.stringify({
             ...metaDecisionMsg,
             type: 'discussion',
-            gameId: Number(id)
+            gameId: Number(id),
+            pollId: metaPollId,
+            messageId: metaPollId
           }));
         }
         
@@ -1299,7 +1440,11 @@ export default function GamePage() {
           body: JSON.stringify({
             message: "Should we continue guessing or end turn?",
             team: currentTeam,
-            triggerVoting: true
+            triggerVoting: true,
+            pollId: metaPollId,
+            messageId: metaPollId,
+            isVoting: true,
+            voteType: 'meta_decision'
           })
         }).catch(err => console.error("Error triggering AI meta vote:", err));
         
@@ -2222,7 +2367,7 @@ export default function GamePage() {
     const currentActiveTeam = game.currentTurn === "red_turn" ? "red" : "blue";
     teamDiscussion = teamDiscussion.filter(msg => msg.team === currentActiveTeam || msg.isTurnChange);
     
-    console.log(`💬 Displaying ${teamDiscussion.length} team discussion messages`);
+    //console.log(`💬 Displaying ${teamDiscussion.length} team discussion messages`);
     
     // Get current team info
     const teamColor = currentActiveTeam === "red" ? "red" : "blue";
@@ -2236,7 +2381,7 @@ export default function GamePage() {
     );
     
     // Debug log
-    console.log(`📊 All messages: ${teamDiscussion.length}, With suggestions: ${suggestionMessages.length}, With voting: ${votingMessages.length}`);
+    //console.log(`📊 All messages: ${teamDiscussion.length}, With suggestions: ${suggestionMessages.length}, With voting: ${votingMessages.length}`);
     
     return (
       <Card className="h-[calc(100vh-15rem)] overflow-hidden flex flex-col">
@@ -2289,9 +2434,8 @@ export default function GamePage() {
                 // Check if this is a meta decision message
                 const isMetaDecision = entry.voteType === 'meta_decision' || entry.metaOptions?.length > 0;
                 
-                // Special handling for meta decisions
+                // Special handling for meta decisions - use the dedicated MetaPoll component
                 if (isMetaDecision) {
-                  // Format like a normal message but with visual indicators of the options
                   return (
                     <div key={`meta-decision-${entry.timestamp}`} className="flex items-start gap-2">
                       <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 shadow-sm">
@@ -2299,97 +2443,28 @@ export default function GamePage() {
                       </div>
                       <div className="flex-1">
                         <div className="font-medium text-gray-800">
-                          {entry.player}
+                          Team Decision
                           <span className="text-xs text-gray-500 ml-2">
                             {new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                           </span>
                           <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
-                            decision
+                            team vote
                           </span>
                         </div>
                         
-                        <div className="p-2 rounded-md border border-blue-200 bg-blue-50/40 shadow-sm">
-                          <div className="mb-2">{entry.message}</div>
-                          
-                          {/* Among Us style meta decision UI - No manual buttons, just display status */}
-                          <div className="flex flex-col space-y-3 mt-2">
-                            {/* Continue guessing option with voters */}
-                            <div className="p-3 rounded-md bg-green-50 border border-green-100 flex justify-between items-center">
-                              <div className="flex items-center gap-2">
-                                <span className="font-semibold text-green-700">👍 Continue Guessing</span>
-                                <div className="flex -space-x-2">
-                                  {Object.entries(votedOnMeta)
-                                    .filter(([key]) => key.split('-')[1] === 'continue')
-                                    .map(([key, voters]) => 
-                                      Array.from(voters).map((voter, i) => {
-                                        const isAI = voter !== 'human' && voter !== 'Game';
-                                        const ModelIcon = isAI && AI_MODEL_INFO[voter as AIModel]?.Icon 
-                                          ? AI_MODEL_INFO[voter as AIModel]?.Icon 
-                                          : Bot;
-                                          
-                                        return (
-                                          <div 
-                                            key={`continue-${voter}-${i}`}
-                                            className="w-6 h-6 rounded-full flex items-center justify-center shadow-sm border-2 border-white bg-green-100"
-                                            title={voter}
-                                          >
-                                            {voter === 'human' ? (
-                                              <span className="text-[10px]">👤</span>
-                                            ) : isAI ? (
-                                              <ModelIcon className="w-3 h-3" />
-                                            ) : (
-                                              <Clock className="w-3 h-3 text-gray-500" />
-                                            )}
-                                          </div>
-                                        );
-                                      })
-                                    )
-                                  }
-                                </div>
-                              </div>
-                              <div className="text-xs text-green-700 opacity-70">Auto-voting</div>
-                            </div>
-
-                            {/* End turn option with voters */}
-                            <div className="p-3 rounded-md bg-red-50 border border-red-100 flex justify-between items-center">
-                              <div className="flex items-center gap-2">
-                                <span className="font-semibold text-red-700">👎 End Turn</span>
-                                <div className="flex -space-x-2">
-                                  {Object.entries(votedOnMeta)
-                                    .filter(([key]) => key.split('-')[1] === 'end_turn')
-                                    .map(([key, voters]) => 
-                                      Array.from(voters).map((voter, i) => {
-                                        const isAI = voter !== 'human' && voter !== 'Game';
-                                        const ModelIcon = isAI && AI_MODEL_INFO[voter as AIModel]?.Icon 
-                                          ? AI_MODEL_INFO[voter as AIModel]?.Icon 
-                                          : Bot;
-                                          
-                                        return (
-                                          <div 
-                                            key={`endturn-${voter}-${i}`}
-                                            className="w-6 h-6 rounded-full flex items-center justify-center shadow-sm border-2 border-white bg-red-100"
-                                            title={voter}
-                                          >
-                                            {voter === 'human' ? (
-                                              <span className="text-[10px]">👤</span>
-                                            ) : isAI ? (
-                                              <ModelIcon className="w-3 h-3" />
-                                            ) : (
-                                              <Clock className="w-3 h-3 text-gray-500" />
-                                            )}
-                                          </div>
-                                        );
-                                      })
-                                    )
-                                  }
-                                </div>
-                              </div>
-                              <div className="text-xs text-red-700 opacity-70">Auto-voting</div>
-                            </div>
-                          </div>
-                          
-                          {/* No need for additional model display as they're now shown in the 'Among Us' style UI above */}
-                        </div>
+                        <MetaPoll 
+                          pollId={entry.pollId || `meta-${teamColor}-${entry.timestamp}`}
+                          team={teamColor}
+                          gameId={Number(id)}
+                          timestamp={entry.timestamp}
+                          messageId={entry.messageId || `${entry.timestamp}-${entry.player}`}
+                          onVote={handleMetaVote}
+                          currentClue={lastClue}
+                          gameScore={{
+                            red: game.redScore || 0,
+                            blue: game.blueScore || 0
+                          }}
+                        />
                       </div>
                     </div>
                   );
@@ -2593,7 +2668,7 @@ export default function GamePage() {
     const isTurnStart = entry.message?.includes("New Discussion Begins");
 
     // Format message with bold text and line breaks
-    const formatMessage = (message: string) => {
+    const formatMessage = (message: string, forceHighlight: boolean = false) => {
       if (!message) return "";
       
       // First handle line breaks and spaces
@@ -2609,8 +2684,8 @@ export default function GamePage() {
         return '&nbsp;'.repeat(match.length);
       });
       
-      // If word highlighting is enabled, highlight game words FIRST before other formatting
-      if (highlightGameWords && game) {
+      // If word highlighting is enabled OR forceHighlight is true, highlight game words
+      if ((highlightGameWords || forceHighlight) && game) {
         // Process all game words
         game.words.forEach(gameWord => {
           // Determine highlight color based on word type
@@ -2711,13 +2786,39 @@ export default function GamePage() {
             ${!isCurrentTeam && !isTurnChangeMsg ? `border-${msgTeamColor}-200` : (!isTurnChangeMsg ? 'border-gray-100' : '')}
             ${specialClassNames} 
             ${hasSuggestions && !isTurnChangeMsg ? `bg-amber-50/40` : ''} 
-            ${isVotingMsg && !isTurnChangeMsg ? `bg-blue-50/40` : ''}`
+            ${isVotingMsg && !isTurnChangeMsg ? `bg-blue-50/40` : ''}
+            ${
+              // @ts-ignore - Property leadToMetaVote may not exist on type but used in logic
+              entry.leadToMetaVote ? `bg-blue-100 shadow-md border-blue-200` : ''
+            }`
           }>
-            {/* Use dangerouslySetInnerHTML to render formatted message */}
-            <div 
-              className="mb-1"
-              dangerouslySetInnerHTML={{ __html: formatMessage(entry.message) }}
-            ></div>
+            {/* Use dangerouslySetInnerHTML to render formatted message with special animation for correct guesses */}
+            {/* @ts-ignore - Property animate may not exist on type but used in logic */}
+            {entry.animate || entry.cardType ? (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ 
+                  type: "spring", 
+                  stiffness: 300, 
+                  damping: 15,
+                  duration: 0.5
+                }}
+                className={`mb-2 px-4 py-2 rounded-md font-bold text-center ${
+                  // @ts-ignore - Property cardType may not exist on type but used in logic
+                  entry.cardType === 'red' ? 'bg-red-100 text-red-700 border border-red-300' : 
+                  // @ts-ignore - Property cardType may not exist on type but used in logic
+                  entry.cardType === 'blue' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 
+                  'bg-gray-100 text-gray-700 border border-gray-300'
+                }`}
+                dangerouslySetInnerHTML={{ __html: formatMessage(entry.message) }}
+              />
+            ) : (
+              <div 
+                className="mb-1"
+                dangerouslySetInnerHTML={{ __html: formatMessage(entry.message) }}
+              ></div>
+            )}
             
             {/* If message has suggested words, show them as clickable buttons for voting */}
             {hasSuggestions && entry.suggestedWords && entry.suggestedWords.length > 0 && !entry.suggestedWords.includes("CONTINUE") && !entry.suggestedWords.includes("END TURN") && (
@@ -2786,24 +2887,60 @@ export default function GamePage() {
   };
 
   const renderGameLog = () => {
-    // Only include important game events (clues and guesses)
-    const filteredLog = gameLog.filter(entry => 
+    // CRITICAL FIX: Include ALL important game events (clues, guesses, AND meta votes)
+  // This time create a deep clone so we can add local meta_vote entries to it
+  // First get all relevant entries
+  // Process game history entries to ensure team is correctly set
+  const gameHistoryEntries = (game?.gameHistory?.filter(entry => entry.type === "meta_vote") || [])
+    .map(entry => ({
+      ...entry,
+      // Ensure team is set correctly - use turn field as primary source for meta votes
+      team: entry.turn || entry.team,
+      // Ensure vote action is set for meta votes
+      voteAction: entry.voteAction || (
+        entry.action?.includes('continue') ? 'continue' : 
+        entry.action?.includes('end turn') ? 'end_turn' : 
+        'discuss_more'
+      )
+    }));
+  
+  const allEntries = [...gameLog, ...gameHistoryEntries]
+    .filter(entry => 
       // Add null checks to prevent accessing properties of undefined
       (entry.action && (
         entry.action.includes("clue") || 
-        entry.action.includes("Guessed")
+        entry.action.includes("Guessed") ||
+        entry.action.includes("voted to") || // Include meta vote entries
+        entry.action.includes("team decision") // Include team decision entries
       )) ||
       entry.result === "correct" ||
       entry.result === "wrong" ||
-      entry.result === "assassin"
+      entry.result === "assassin" ||
+      entry.type === "meta_vote" // Explicitly include meta_vote type entries
     );
+  
+  // CRITICAL: Sort ALL entries chronologically by timestamp to ensure proper ordering
+  // This ensures meta votes and other entries are strictly in chronological order
+  const filteredLog = allEntries.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  
+  // DIAGNOSTIC: Log meta votes for debugging team attribution
+  const metaVotes = filteredLog.filter(entry => entry.type === "meta_vote");
+  if (metaVotes.length > 0) {
+    console.log(`📊 Game log contains ${metaVotes.length} meta votes:`, 
+      metaVotes.map(v => ({
+        team: v.team, 
+        action: v.voteAction || v.action,
+        player: v.player
+      }))
+    );
+  }
     
     if (filteredLog.length === 0) {
-    return (
+      return (
         <div className="text-center p-6 text-gray-500">
           <div className="mb-2">📜</div>
           No game actions yet
-              </div>
+        </div>
       );
     }
 
@@ -2812,11 +2949,15 @@ export default function GamePage() {
         <div className="space-y-2 p-2">
           {filteredLog.slice().reverse().map((entry, i) => {
             const isRed = entry.team === "red";
-            const isClue = entry.action.includes("clue");
+            const isClue = entry.action?.includes("clue");
+            const isMetaVote = entry.type === "meta_vote" || entry.action?.includes("voted to");
             const hasReasoning = entry.reasoning && typeof entry.reasoning === 'string';
-
-                return (
-                  <div
+            
+            // Create a unique ID for tracking expanded state
+            const entryId = `log-${i}-${entry.timestamp || ''}`;
+            
+            return (
+              <div 
                 key={i} 
                 className={`p-3 rounded-lg border-l-4 ${
                   isRed 
@@ -2827,29 +2968,34 @@ export default function GamePage() {
                 <div className="mt-1">
                   {isClue 
                     ? <span className="text-xl">🔍</span>
-                    : getLogEmoji(entry.result)
+                    : isMetaVote
+                      ? <span className="text-l">🗳️</span>
+                      : getLogEmoji(entry.result)
                   }
-                      </div>
+                </div>
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
                     <span className={`font-semibold ${isRed ? "text-red-700" : "text-blue-700"}`}>
                       {isRed ? "Red" : "Blue"}
-                  </span>
+                    </span>
                     {entry.player && (
                       <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">
-                        {entry.player === "human" ? "You" : entry.player}
-                        </span>
-                      )}
+                        {entry.player === "human" ? "You" : 
+                         typeof entry.player === 'string' && entry.player.includes('#') 
+                           ? entry.player.split('#')[0]
+                           : entry.player}
+                      </span>
+                    )}
                     <span className="text-xs text-gray-500 ml-auto">
                       {entry.timestamp 
                         ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
                         : new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                     </span>
-                    </div>
+                  </div>
                   <p className={`text-gray-800 ${isClue ? "font-medium" : ""}`}>
                     {entry.action}
                   </p>
-                  {entry.word && (
+                  {entry.word && !isMetaVote && (
                     <div className="mt-1">
                       <span className={`inline-block px-2 py-1 text-xs rounded ${
                         entry.result === "correct" 
@@ -2863,23 +3009,75 @@ export default function GamePage() {
                     </div>
                   )}
                   
-                  {/* Display reasoning only for human players (not for AI) */}
+                  {/* Show vote action for meta votes */}
+                  {isMetaVote && entry.voteAction && (
+                    <div className="mt-1">
+                      <span className={`inline-block px-2 py-1 text-xs rounded ${
+                        entry.voteAction === "continue" 
+                          ? "bg-green-100 text-green-800" 
+                          : entry.voteAction === "end_turn" 
+                            ? "bg-red-100 text-red-800" 
+                            : "bg-gray-100 text-gray-800"
+                      }`}>
+                        {entry.voteAction === "continue" ? "Continue Guessing" : 
+                         entry.voteAction === "end_turn" ? "End Turn" : 
+                         "Discuss More"}
+                      </span>
+                    </div>
+                  )}
+                  
+                  {/* Add the collapsible reasoning section */}
                   {hasReasoning && (
-                    <div className="mt-2 p-2 bg-purple-100 border-l-4 border-purple-500 text-purple-800 text-sm rounded">
-                      <p className="font-semibold mb-1">Spymaster's Reasoning:</p>
-                      <p>{entry.reasoning}</p>
+                    <div className="mt-2">
+                      <button
+                        onClick={() => setExpandedReasonings(prev => ({
+                          ...prev,
+                          [entryId]: !prev[entryId]
+                        }))}
+                        className="flex items-center text-sm text-purple-600 hover:text-purple-800 font-medium"
+                      >
+                        <span>{expandedReasonings[entryId] ? "Hide" : "Show"} {isMetaVote ? "Vote" : "Spymaster's"} Reasoning</span>
+                        <svg 
+                          className={`ml-1 w-4 h-4 transition-transform ${expandedReasonings[entryId] ? 'rotate-180' : ''}`} 
+                          fill="none" 
+                          viewBox="0 0 24 24" 
+                          stroke="currentColor"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      
+                      {expandedReasonings[entryId] && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          transition={{ duration: 0.3 }}
+                          className={`mt-2 p-3 ${
+                            isMetaVote ? "bg-blue-100 border-l-4 border-blue-500 text-blue-800" : 
+                            "bg-purple-100 border-l-4 border-purple-500 text-purple-800"
+                          } text-sm rounded`}
+                        >
+                          <p className="font-semibold mb-1">
+                            {isMetaVote ? "Vote Reasoning:" : "Spymaster's Reasoning:"}
+                          </p>
+                          <div dangerouslySetInnerHTML={{ 
+                            __html: formatMessage(entry.reasoning || '', true) 
+                          }}></div>
+                        </motion.div>
+                      )}
                     </div>
                   )}
                 </div>
-                  </div>
-                );
-              })}
-            </div>
-          </ScrollArea>
+              </div>
+            );
+          })}
+        </div>
+      </ScrollArea>
     );
   };
 
-  // Add this helper function to get appropriate emoji for log entries
+  // Add this helper function back
   const getLogEmoji = (result: "correct" | "wrong" | "assassin" | "pending") => {
     switch (result) {
       case "correct":
@@ -2894,103 +3092,32 @@ export default function GamePage() {
     }
   };
 
-  // ENHANCED: Function to handle meta voting (continue/end turn)
-  const handleMetaVote = (action: "continue" | "end_turn" | "discuss_more", team: string) => {
-    console.log(`Submitting meta vote for action: ${action}, team: ${team}`);
+  // ENHANCED: Function to handle meta voting (continue/end turn) with unique model IDs
+  const handleMetaVote = (action: "continue" | "end_turn" | "discuss_more", team: string, pollId?: string) => {
+    console.log(`Submitting meta vote for action: ${action}, team: ${team}, pollId: ${pollId}`);
     
-    if (!game?.id) {
-      console.error("Cannot vote - no active game");
-      return;
-    }
-    
-    // Special case for voting on CONTINUE/END TURN as words
-    if (action === "continue" && team === "CONTINUE") {
-      // Handle as a continue vote
-      action = "continue";
-      team = game.currentTurn === "red_turn" ? "red" : "blue";
-      
+    // If no pollId is provided, we can't properly isolate the vote
+    if (!pollId) {
+      console.error("Cannot vote without a poll ID - each meta vote must have a unique identifier");
       toast({
-        title: "Continue vote",
-        description: "You voted to continue guessing",
-      });
-    } else if (action === "continue" && team === "END TURN") {
-      // Handle as an end turn vote
-      action = "end_turn";
-      team = game.currentTurn === "red_turn" ? "red" : "blue";
-      
-      toast({
-        title: "End turn vote",
-        description: "You voted to end your turn",
-      });
-    }
-    
-    // Prevent duplicate meta voting
-    const actionKey = `${team}-${action}`;
-    let alreadyVoted = false;
-    
-    setVotedOnMeta(prev => {
-      if (!prev[actionKey]) {
-        prev[actionKey] = new Set(['human']);
-      } else {
-        // Check if this human already voted
-        if (prev[actionKey].has('human')) {
-          alreadyVoted = true;
-          return prev;
-        }
-        
-        // Add this vote
-        prev[actionKey].add('human');
-      }
-      return { ...prev };
-    });
-    
-    if (alreadyVoted) {
-      toast({
-        title: "Already voted",
-        description: "You've already voted on this action",
+        title: "Voting Error",
+        description: "This vote couldn't be processed. Please try again.",
         variant: "destructive"
       });
       return;
     }
     
-    // Create vote payload
+    // Create vote payload with poll ID for isolation
     const vote = {
       model: "human", 
       team,
-      action
+      action,
+      pollId,  // Critical: Include poll ID to ensure votes go to the correct poll
+      uniqueId: `human-${Math.floor(Math.random() * 1000000)}` // Ensure each human vote is unique
     };
     
-    // Immediate UI feedback for normal votes
-    if (team !== "CONTINUE" && team !== "END TURN") {
-      toast({
-        title: "Vote submitted",
-        description: `You voted to ${action.replace('_', ' ')}`,
-      });
-    }
-    
-    // Add the vote message to the discussion
-    const voteMessage = {
-      team,
-      player: 'human',
-      message: `Voted: ${action === "continue" ? "Continue guessing" : "End turn"}`,
-      timestamp: Date.now(),
-      isVoting: true,
-      voteType: action
-    };
-    
-    setLocalDiscussion(prev => [...prev, voteMessage]);
-    
-    // Send the discussion message via WebSocket
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({
-        ...voteMessage,
-        type: 'discussion',
-        gameId: Number(game.id)
-      }));
-    }
-    
-    // Send the vote via API
-    fetch(`/api/games/${game.id}/meta/vote`, {
+    // Send the vote
+    fetch(`/api/games/${id}/meta/vote`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(vote)
@@ -2999,97 +3126,25 @@ export default function GamePage() {
     .then(data => {
       console.log("Meta vote submitted:", data);
       
-      // If an action was taken as a result of the vote (e.g., turn ended)
-      if (data.action === 'turn_ended') {
-        console.log("Turn ended as a result of vote");
+      // Add to local state immediately for UI feedback
+      // Use pollId in the key to ensure votes are isolated
+      setVotedOnMeta(prev => {
+        const newState = { ...prev };
+        const key = `${team}-${action}-${pollId}`; // Include pollId in key for complete isolation
         
-        // Use our consistent turn change handler
-        handleTurnChange('vote');
-      } else if (data.action === 'continuing' && action === 'continue') {
-        console.log("Team voted to continue guessing");
-        
-        // Add a message confirming continuation
-        const confirmMessage = {
-          team,
-          player: 'Game',
-          message: `Team has decided to continue guessing!`,
-          timestamp: Date.now(),
-          isVoting: false
-        };
-        
-        setLocalDiscussion(prev => [...prev, confirmMessage]);
-        
-        if (socketRef.current?.readyState === WebSocket.OPEN) {
-          socketRef.current.send(JSON.stringify({
-            ...confirmMessage,
-            type: 'discussion',
-            gameId: Number(game.id)
-          }));
+        if (!newState[key]) {
+          newState[key] = new Set();
         }
         
-        // Scan for high-confidence words to auto-guess
-        const filteredWords = Object.entries(wordVoteCounts)
-          .filter(([word, info]) => {
-            // Must meet threshold AND not be already revealed
-            return info.count >= info.threshold && 
-                  !game.revealedCards.includes(word);
-          })
-          .sort((a, b) => b[1].count - a[1].count);
-        
-        if (filteredWords.length > 0) {
-          console.log(`Found ${filteredWords.length} high confidence words to guess: ${filteredWords.map(w => w[0]).join(', ')}`);
-          
-          // Take the highest confidence word
-          const wordToGuess = filteredWords[0][0];
-          
-          // Announce the automatic guess
-          toast({
-            title: "Auto-guessing",
-            description: `Based on team vote, guessing: ${wordToGuess}`,
-          });
-          
-          // Add message about auto-guess
-          const autoGuessMsg = {
-            team,
-            player: 'Game',
-            message: `Auto-guessing highest confidence word: ${wordToGuess}`,
-            timestamp: Date.now() + 1,
-            suggestedWords: [wordToGuess],
-            confidences: [0.9]
-          };
-          
-          setLocalDiscussion(prev => [...prev, autoGuessMsg]);
-          
-          // Make the guess after a short delay
-          setTimeout(() => {
-            if (!game.revealedCards.includes(wordToGuess)) {
-              makeGuess.mutate(wordToGuess);
-            }
-          }, 1500);
-        } else {
-          // No high confidence words, prompt for a new suggestion
-          const promptMsg = {
-            team,
-            player: 'Game',
-            message: `No high confidence words found. Please suggest a word to guess.`,
-            timestamp: Date.now() + 1
-          };
-          
-          setLocalDiscussion(prev => [...prev, promptMsg]);
-        }
-      }
-      
-      // Force refresh game data
-      queryClient.invalidateQueries({ 
-        queryKey: [`/api/games/${game.id}`],
-        refetchType: 'active' 
+        newState[key].add('human');
+        return newState;
       });
     })
     .catch(error => {
       console.error("Error submitting meta vote:", error);
       toast({
-        title: "Failed to submit vote",
-        description: "An error occurred while voting",
+        title: "Voting Error",
+        description: "Your vote couldn't be submitted. Please try again.",
         variant: "destructive"
       });
     });
@@ -3138,7 +3193,7 @@ export default function GamePage() {
     useEffect(() => {
       if (didReset) return;
       
-      console.log("🧹 Hard reset of game UI on initial component mount");
+      //console.log("🧹 Hard reset of game UI on initial component mount");
       
       // Clear all local state
       setLocalDiscussion([]);
@@ -3152,11 +3207,66 @@ export default function GamePage() {
     
     return null; // Render nothing, just perform the effect
   };
+  
+  // CRITICAL FIX: Component to monitor game state and sync meta votes to UI
+  const MetaVoteSync = () => {
+    useEffect(() => {
+      if (!game?.metaVotes) return;
+      
+      // Process meta votes into votedOnMeta format
+      const syncMetaVotes = () => {
+        console.log('Syncing meta votes to UI state...', game.metaVotes);
+        
+        // Get only the current team's votes for active turn  
+        const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+        const teamVotes = (game.metaVotes || []).filter(vote => vote.team === currentTeam);
+        
+        // CRITICAL FIX: Group votes by action AND pollId to maintain isolation
+        const metaVotesMap: Record<string, Set<string>> = {};
+        
+        teamVotes.forEach(vote => {
+          // Include pollId in the key for complete isolation
+          const key = `${vote.team}-${vote.action}-${vote.pollId || 'default'}`;
+          
+          if (!metaVotesMap[key]) {
+            metaVotesMap[key] = new Set();
+          }
+          
+          // Add the player to the set of voters for this specific poll
+          metaVotesMap[key].add(vote.player);
+        });
+        
+        // Count votes for logging (per poll)
+        const pollGroups = teamVotes.reduce((acc, vote) => {
+          const pollId = vote.pollId || 'default';
+          if (!acc[pollId]) acc[pollId] = { continue: 0, end_turn: 0, pollId };
+          if (vote.action === 'continue') acc[pollId].continue++;
+          if (vote.action === 'end_turn') acc[pollId].end_turn++;
+          return acc;
+        }, {} as Record<string, {continue: number, end_turn: number, pollId: string}>);
+        
+        // Log vote counts by poll
+        Object.values(pollGroups).forEach(poll => {
+          console.log(`📊 Poll ${poll.pollId}: continue=${poll.continue}, end_turn=${poll.end_turn}`);
+        });
+        
+        // Update state with completely isolated votes
+        setVotedOnMeta(metaVotesMap);
+      };
+      
+      // Initial sync
+      syncMetaVotes();
+      
+    }, [game?.metaVotes?.length, game?.currentTurn]);
+    
+    return null;
+  };
 
   // Main component render
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 p-4">
       <InitialReset />
+      <MetaVoteSync />
       
       {/* Shift header elements slightly left for better visual alignment */}
       <div className="mb-6 flex flex-col items-center justify-center -translate-x-4">
@@ -3217,6 +3327,17 @@ export default function GamePage() {
                 className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105 h-40 flex items-center justify-center shadow-md`}
                 onClick={() => {
                     console.log(`📌 Card clicked: ${word}`);
+                    // CRITICAL: Block card clicks when voting is in progress
+                    if (isVotingActive || votingInProgress) {
+                      console.log(`⚠️ Card click ignored: Voting in progress`);
+                      toast({
+                        title: "Voting in progress",
+                        description: "Wait for team decision before making next move",
+                        variant: "warning",
+                      });
+                      return;
+                    }
+                    
                     if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
                       console.log(`🎮 Making guess for word: ${word}`);
                       makeGuess.mutate(word);

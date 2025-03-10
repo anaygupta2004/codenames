@@ -2240,6 +2240,383 @@ export function assessConsensus(
   };
 }
 
+// New function for Team Voting Decision about continuing or ending turn
+export async function getMetaDecision(
+  model: AIModel,
+  team: "red" | "blue",
+  currentClue: { word: string; number: number },
+  teamDiscussion: TeamDiscussionEntry[],
+  gameHistory: GameHistoryEntry[],
+  availableWords: string[],
+  revealedCards: string[],
+  guessesThisTurn: number,
+  gameScore: { red: number; blue: number },
+  gameId: number = 1
+): Promise<{ 
+  action: "continue" | "end_turn"; 
+  reasoning: string; 
+  confidence: number;
+}> {
+  // Format the team discussion in a readable way
+  const discussionText = teamDiscussion
+    .map(d => {
+      let wordText = "";
+      if (d.suggestedWord) {
+        wordText = ` [Suggests: ${d.suggestedWord}]`;
+      } else if (d.suggestedWords && d.suggestedWords.length > 0) {
+        wordText = ` [Suggests: ${d.suggestedWords.join(", ")}]`;
+      }
+      return `${d.player}: ${d.message}${wordText}`;
+    })
+    .join('\n');
+  
+  // Get recent game history to analyze patterns
+  const recentHistory = gameHistory
+    .slice(-20) // Look at the most recent history entries
+    .filter(entry => entry.turn === team); // Only focus on this team's history
+  
+  // Get correct and incorrect guesses for the current clue
+  const correctGuesses = recentHistory
+    .filter(entry => 
+      entry.type === "guess" && 
+      entry.relatedClue === currentClue.word && 
+      entry.result === "correct"
+    )
+    .map(entry => entry.word);
+  
+  const incorrectGuesses = recentHistory
+    .filter(entry => 
+      entry.type === "guess" && 
+      entry.relatedClue === currentClue.word && 
+      entry.result !== "correct" && 
+      entry.result !== "pending"
+    )
+    .map(entry => entry.word);
+  
+  // Get current team score and remaining words to win
+  const currentTeamScore = team === "red" ? gameScore.red : gameScore.blue;
+  const opposingTeamScore = team === "red" ? gameScore.blue : gameScore.red;
+  const wordsToWin = 9 - currentTeamScore; // Most games have 9 words per team
+
+  // Get candidate words from discussion
+  const candidateWords = new Map<string, {
+    mentions: number,
+    confidence: number,
+    supporters: string[],
+    opposers: string[]
+  }>();
+
+  // Process all suggested words from discussion
+  teamDiscussion.forEach(entry => {
+    // Handle single word suggestion
+    if (entry.suggestedWord && !revealedCards.includes(entry.suggestedWord)) {
+      if (!candidateWords.has(entry.suggestedWord)) {
+        candidateWords.set(entry.suggestedWord, {
+          mentions: 0,
+          confidence: 0,
+          supporters: [],
+          opposers: []
+        });
+      }
+      
+      const data = candidateWords.get(entry.suggestedWord)!;
+      data.mentions++;
+      
+      if (entry.confidence > 0.5) {
+        if (!data.supporters.includes(entry.player)) {
+          data.supporters.push(entry.player);
+          data.confidence += entry.confidence;
+        }
+      } else if (entry.confidence < 0.3) {
+        if (!data.opposers.includes(entry.player)) {
+          data.opposers.push(entry.player);
+        }
+      }
+    }
+    
+    // Handle multiple word suggestions
+    if (entry.suggestedWords && entry.suggestedWords.length > 0) {
+      entry.suggestedWords.forEach((word, idx) => {
+        if (revealedCards.includes(word)) return;
+        
+        if (!candidateWords.has(word)) {
+          candidateWords.set(word, {
+            mentions: 0,
+            confidence: 0,
+            supporters: [],
+            opposers: []
+          });
+        }
+        
+        const data = candidateWords.get(word)!;
+        data.mentions++;
+        
+        // If confidences array exists, use the specific confidence for this word
+        const wordConfidence = entry.confidences && entry.confidences[idx] !== undefined
+          ? entry.confidences[idx]
+          : Math.max(0.3, (entry.confidence || 0.5) * (1 - idx * 0.15)); // Decrease confidence for later words
+        
+        if (wordConfidence > 0.5) {
+          if (!data.supporters.includes(entry.player)) {
+            data.supporters.push(entry.player);
+            data.confidence += wordConfidence;
+          }
+        } else if (wordConfidence < 0.3) {
+          if (!data.opposers.includes(entry.player)) {
+            data.opposers.push(entry.player);
+          }
+        }
+      });
+    }
+  });
+
+  // Format candidate words for the prompt
+  const candidateWordsList = Array.from(candidateWords.entries())
+    .sort((a, b) => {
+      // First by support ratio (supporters - opposers)
+      const supportRatioA = a[1].supporters.length - a[1].opposers.length;
+      const supportRatioB = b[1].supporters.length - b[1].opposers.length;
+      
+      if (supportRatioB !== supportRatioA) {
+        return supportRatioB - supportRatioA;
+      }
+      
+      // Then by average confidence
+      const avgConfidenceA = a[1].confidence / Math.max(1, a[1].supporters.length);
+      const avgConfidenceB = b[1].confidence / Math.max(1, b[1].supporters.length);
+      
+      return avgConfidenceB - avgConfidenceA;
+    })
+    .map(([word, data]) => {
+      const avgConfidence = data.confidence / Math.max(1, data.supporters.length);
+      return `"${word}": mentioned ${data.mentions} times, supported by ${data.supporters.join(", ")} (${data.supporters.length}), opposed by ${data.opposers.join(", ")} (${data.opposers.length}), avg confidence: ${(avgConfidence * 100).toFixed(0)}%`;
+    })
+    .join('\n');
+
+  // Generate a strategic assessment based on game state
+  const hasStrongWord = Array.from(candidateWords.entries()).some(([_, data]) => {
+    const avgConfidence = data.confidence / Math.max(1, data.supporters.length);
+    return data.supporters.length > 1 && avgConfidence > 0.7;
+  });
+
+  // Create assessments of game situation and risk
+  const gameState = currentTeamScore > opposingTeamScore ? "leading" : 
+                    currentTeamScore < opposingTeamScore ? "trailing" : "tied";
+  
+  const scoreDifference = Math.abs(currentTeamScore - opposingTeamScore);
+  const gamePhase = wordsToWin <= 2 ? "endgame" : 
+                   wordsToWin <= 5 ? "midgame" : "earlygame";
+  
+  const riskAssessment = gameState === "leading" ? "Conservative play is advised" :
+                        gameState === "trailing" && scoreDifference > 1 ? "Higher risk is justified" :
+                        "Balanced risk approach recommended";
+
+  // Create a comprehensive prompt for the Team Voting Decision
+  const prompt = `You are playing Codenames as a ${team} team player with the role of ${model}. You need to make a strategic Team Voting Decision on whether to continue guessing or end your turn.
+
+GAME STATE:
+- Current clue: "${currentClue.word}" (${currentClue.number})
+- Guesses made with this clue: ${guessesThisTurn} (${correctGuesses.length} correct, ${incorrectGuesses.length} incorrect)
+- Guesses remaining for this clue: ${Math.max(0, currentClue.number - guessesThisTurn)}
+- Score: ${team} ${currentTeamScore} - ${team === "red" ? "blue" : "red"} ${opposingTeamScore} (${gameState}, difference: ${scoreDifference})
+- Game phase: ${gamePhase.toUpperCase()} (${wordsToWin} words needed to win)
+- Risk posture: ${riskAssessment}
+- Available words: ${availableWords.length} words remain on the board
+- Words already revealed: ${revealedCards.length} cards revealed
+
+CORRECT GUESSES FOR THIS CLUE:
+${correctGuesses.length > 0 ? correctGuesses.join(", ") : "None yet"}
+
+TEAM DISCUSSION HISTORY:
+${discussionText}
+
+CANDIDATE WORDS FROM DISCUSSION (ranked by team support):
+${candidateWordsList || "No candidate words found in discussion"}
+
+STRATEGIC CONSIDERATIONS:
+1. Clue effectiveness: How well has this clue worked so far? (${correctGuesses.length} correct, ${incorrectGuesses.length} incorrect)
+2. Remaining opportunities: Are there strong candidate words left worth guessing?
+3. Risk analysis: What's the likelihood of hitting an opponent's word or the assassin?
+4. Score considerations: Given the current score (${team} ${currentTeamScore} - ${team === "red" ? "blue" : "red"} ${opposingTeamScore}), is caution or aggression better?
+5. Long-term strategy: Will ending the turn now set up better opportunities in future turns?
+6. Team consensus: Is there clear agreement on a next word, or is the team uncertain?
+
+As the ${model} AI team member, you need to make a Team Voting Decision:
+1. CONTINUE guessing if there's a promising candidate word with good team consensus
+2. END TURN if the risk is too high or there are no strong candidates remaining
+
+Make this strategic decision considering both the discussion and game state.
+Respond in JSON format with:
+{
+  "action": "continue" OR "end_turn",
+  "reasoning": "detailed explanation of your Team Voting Decision",
+  "confidence": number between 0-1 representing your certainty
+}`;
+
+  switch (model) {
+    case "gpt-4o":
+      return await getOpenAIMetaDecision(prompt);
+    case "claude-3-5-sonnet-20241022":
+      return await getAnthropicMetaDecision(prompt);
+    case "grok-2-1212":
+      return await getXAIMetaDecision(prompt);
+    case "gemini-1.5-pro":
+      return await getGeminiMetaDecision(prompt);
+    default:
+      throw new Error(`Invalid AI model: ${model}`);
+  }
+}
+
+// Implementation of model-specific meta decision functions
+async function getOpenAIMetaDecision(prompt: string): Promise<{ 
+  action: "continue" | "end_turn"; 
+  reasoning: string; 
+  confidence: number;
+}> {
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [{ role: "user", content: prompt }],
+    response_format: { type: "json_object" }
+  });
+
+  const content = response.choices[0].message.content;
+  if (!content) {
+    throw new Error("No response from OpenAI");
+  }
+
+  return validateMetaDecision(JSON.parse(content));
+}
+
+async function getAnthropicMetaDecision(prompt: string): Promise<{ 
+  action: "continue" | "end_turn"; 
+  reasoning: string; 
+  confidence: number;
+}> {
+  const response = await anthropic.messages.create({
+    model: "claude-3-5-sonnet-20241022",
+    max_tokens: 1024,
+    messages: [
+      { 
+        role: 'assistant', 
+        content: 'I am a Codenames AI player making a strategic decision about continuing or ending my turn. I will respond in JSON format.' 
+      },
+      { 
+        role: 'user', 
+        content: prompt 
+      }
+    ],
+  });
+
+  if (!response.content[0] || response.content[0].type !== 'text') {
+    throw new Error("Invalid response format from Anthropic");
+  }
+
+  try {
+    const content = response.content[0].text.trim();
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return {
+        action: "end_turn",
+        reasoning: "Could not parse response, defaulting to ending turn for safety",
+        confidence: 0.5
+      };
+    }
+
+    return validateMetaDecision(JSON.parse(jsonMatch[0]));
+  } catch (error) {
+    console.error("Error parsing Anthropic response:", error);
+    return {
+      action: "end_turn",
+      reasoning: "Error processing response, defaulting to ending turn for safety",
+      confidence: 0.5
+    };
+  }
+}
+
+async function getXAIMetaDecision(prompt: string): Promise<{ 
+  action: "continue" | "end_turn"; 
+  reasoning: string; 
+  confidence: number;
+}> {
+  const openaiXAI = new OpenAI({
+    baseURL: "https://api.x.ai/v1",
+    apiKey: "***REMOVED***"
+  });
+
+  const response = await openaiXAI.chat.completions.create({
+    model: "grok-2-1212",
+    messages: [{ role: "user", content: prompt }],
+    response_format: { type: "json_object" }
+  });
+
+  const content = response.choices[0].message.content;
+  if (!content) {
+    throw new Error("No response from xAI");
+  }
+
+  return validateMetaDecision(JSON.parse(content));
+}
+
+async function getGeminiMetaDecision(prompt: string): Promise<{ 
+  action: "continue" | "end_turn"; 
+  reasoning: string; 
+  confidence: number;
+}> {
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+  try {
+    const result = await model.generateContent({
+      contents: [{ 
+        role: "user", 
+        parts: [{ text: prompt }] 
+      }],
+    });
+    const text = result.response.text().trim();
+    const sanitizedText = sanitizeJsonResponse(text);
+    
+    try {
+      const parsed = JSON.parse(sanitizedText);
+      return validateMetaDecision(parsed);
+    } catch (parseError) {
+      console.error("JSON parse error:", parseError);
+      const jsonMatch = sanitizedText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const extracted = JSON.parse(jsonMatch[0]);
+        return validateMetaDecision(extracted);
+      }
+      throw new Error("Failed to parse Gemini meta decision response");
+    }
+  } catch (error) {
+    console.error("Error in Gemini meta decision:", error);
+    return {
+      action: "end_turn",
+      reasoning: "Error processing response, defaulting to ending turn for safety",
+      confidence: 0.5
+    };
+  }
+}
+
+function validateMetaDecision(response: any): { 
+  action: "continue" | "end_turn"; 
+  reasoning: string; 
+  confidence: number;
+} {
+  if (!response.action || !["continue", "end_turn"].includes(response.action)) {
+    response.action = "end_turn"; // Safer default
+  }
+  
+  if (!response.reasoning || typeof response.reasoning !== "string") {
+    response.reasoning = response.action === "continue"
+      ? "Based on the current game state and discussion, continuing with another guess is the optimal strategy."
+      : "Based on the current game state and discussion, ending the turn is the safer option.";
+  }
+  
+  if (typeof response.confidence !== "number" || response.confidence < 0 || response.confidence > 1) {
+    response.confidence = response.action === "continue" ? 0.7 : 0.8; // Higher confidence for ending turn by default
+  }
+  
+  return response;
+}
+
 export async function makeAgentDecision(
   model: AIModel,
   team: "red" | "blue",
