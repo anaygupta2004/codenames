@@ -198,10 +198,12 @@ export default function GamePage() {
   const [discussionTimer, setDiscussionTimer] = useState<number>(60);
   const [isDiscussing, setIsDiscussing] = useState(false);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.7);
-  const [votingInProgress, setVotingInProgress] = useState(false);
+  // Game state variables
   const [lastClue, setLastClue] = useState<{ word: string; number: number } | null>(null);
   const [discussionInput, setDiscussionInput] = useState("");
   const [isVotingActive, setIsVotingActive] = useState(false);
+  // Track if there's a meta vote in progress specifically
+  const [metaVotingInProgress, setMetaVotingInProgress] = useState(false);
   const [localDiscussion, setLocalDiscussion] = useState<TeamDiscussionEntry[]>([]);
   const [displayedPolls, setDisplayedPolls] = useState(new Set<string>());
   
@@ -1107,19 +1109,47 @@ export default function GamePage() {
       if (result === "correct") {
         console.log("✅ CORRECT GUESS - INITIATING META DECISION FLOW");
         
+        // Check if there's already an active metapoll for this team
+        const existingMetaPollKey = `active-metapoll-${currentTeam}`;
+        const existingMetaPoll = localStorage.getItem(existingMetaPollKey);
+        const now = Date.now();
+        
+        // Only create a new metapoll if there isn't an active one or if the previous one is older than 30 seconds
+        let shouldCreateNewMetaPoll = true;
+        let metaPollId;
+        
+        if (existingMetaPoll) {
+          const [savedPollId, savedTimestamp] = existingMetaPoll.split('|');
+          const pollAge = now - parseInt(savedTimestamp);
+          
+          // If we have a recent poll (less than 30 seconds old), use it instead of creating a new one
+          if (pollAge < 30000) {
+            console.log(`⚠️ Using existing metapoll: ${savedPollId} (${pollAge}ms old)`);
+            metaPollId = savedPollId;
+            shouldCreateNewMetaPoll = false;
+          } else {
+            console.log(`🕒 Existing metapoll expired: ${savedPollId} (${pollAge}ms old)`);
+          }
+        }
+        
+        // Create a new metapoll ID if needed
+        if (shouldCreateNewMetaPoll) {
+          metaPollId = `meta-${currentTeam}-${now}-decision`;
+          // Save this as the active metapoll for this team
+          localStorage.setItem(existingMetaPollKey, `${metaPollId}|${now}`);
+          console.log(`🆕 Created new metapoll: ${metaPollId}`);
+        }
+        
         // IMMEDIATELY set voting state to true for UI rendering
         setIsVotingActive(true);
-        setVotingInProgress(true);
-        
-        // Create a unique and consistent poll ID for this meta decision
-        const metaPollId = `meta-${currentTeam}-${Date.now()}-decision`;
+        setMetaVotingInProgress(true);
         
         // Add a meta decision entry with explicit voting flags
         const metaDecisionMsg = {
           team: currentTeam,
           player: 'Game',
           message: "Team must decide: continue guessing or end turn?",
-          timestamp: Date.now(),
+          timestamp: now,
           isVoting: true, // CRITICAL: Mark as voting message
           voteType: 'meta_decision',
           metaOptions: ['continue', 'end_turn'],
@@ -1130,47 +1160,38 @@ export default function GamePage() {
         // Add to local discussion IMMEDIATELY
         setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
         
-        // REDUNDANCY: Create a timeout to ensure the meta decision appears
-        setTimeout(() => {
-          console.log("🔄 META DECISION REDUNDANCY CHECK");
-          
-          // Double check that voting state is set
-          setIsVotingActive(true);
-          setVotingInProgress(true);
-          
-          // Send via WebSocket for real-time updates
-          if (socketRef.current?.readyState === WebSocket.OPEN) {
-            socketRef.current.send(JSON.stringify({
-              ...metaDecisionMsg,
-              type: 'discussion',
-              gameId: Number(id),
-              // Ensure poll ID and message ID are included in WebSocket message
-              pollId: metaPollId,
-              messageId: metaPollId
-            }));
-          }
-          
-          // Request AI models to vote on continue/end turn
-          fetch(`/api/games/${id}/meta/discuss`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              message: "Should we continue guessing or end turn?",
-              team: currentTeam,
-              triggerVoting: true,
-              pollId: metaPollId, // Add explicit pollId for consistent vote grouping
-              messageId: metaPollId, // Also use same ID as messageId for redundancy
-              isVoting: true,
-              voteType: 'meta_decision'
-            })
-          }).catch(err => console.error("Error triggering AI meta vote:", err));
-          
-          // Force refresh game data to ensure UI updates
-          queryClient.invalidateQueries({ 
-            queryKey: [`/api/games/${id}`],
-            refetchType: 'active'
-          });
-        }, 500);
+        // Send via WebSocket for real-time updates
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            ...metaDecisionMsg,
+            type: 'discussion',
+            gameId: Number(id),
+            // Ensure poll ID and message ID are included in WebSocket message
+            pollId: metaPollId,
+            messageId: metaPollId
+          }));
+        }
+        
+        // Request AI models to vote on continue/end turn
+        fetch(`/api/games/${id}/meta/discuss`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: "Should we continue guessing or end turn?",
+            team: currentTeam,
+            triggerVoting: true,
+            pollId: metaPollId, // Add explicit pollId for consistent vote grouping
+            messageId: metaPollId, // Also use same ID as messageId for redundancy
+            isVoting: true,
+            voteType: 'meta_decision'
+          })
+        }).catch(err => console.error("Error triggering AI meta vote:", err));
+        
+        // Force refresh game data to ensure UI updates
+        queryClient.invalidateQueries({ 
+          queryKey: [`/api/games/${id}`],
+          refetchType: 'active'
+        });
       }
       
       // CRITICAL FIX: Turn only changes when guessing wrong words (neutral/opponent/assassin)
@@ -1184,6 +1205,17 @@ export default function GamePage() {
           apiRequest("PATCH", `/api/games/${id}`, {
             gameState: isRedTurn ? "blue_win" : "red_win"
           });
+        }
+        
+        // CRITICAL FIX: If it's an opponent's word, ensure the opponent gets a point
+        if (isOpponentTeamWord) {
+          console.log(`📈 Opponent team (${isRedTurn ? 'blue' : 'red'}) gets a point for revealing their word`);
+          
+          // Make an additional API call to ensure the score is updated properly
+          const opposingTeam = isRedTurn ? "blue" : "red";
+          apiRequest("PATCH", `/api/games/${id}`, {
+            [`${opposingTeam}Score`]: (game?.[`${opposingTeam}Score`] || 0) + 1
+          }).catch(err => console.error(`Failed to update ${opposingTeam} score:`, err));
         }
         
         // Get the specific reason for turn change
@@ -1409,51 +1441,81 @@ export default function GamePage() {
           }).catch(err => console.error("Error submitting end turn recommendation:", err));
         }
         
-        // Create a unique and consistent poll ID for this meta decision
-        const metaPollId = `meta-${currentTeam}-${Date.now()}-decision-2`;
+        // Check if there's already an active metapoll for this team
+        const existingMetaPollKey = `active-metapoll-${currentTeam}`;
+        const existingMetaPoll = localStorage.getItem(existingMetaPollKey);
+        const now = Date.now();
         
-        // Add a meta decision entry with explicit voting flags
-        const metaDecisionMsg = {
-          team: currentTeam,
-          player: 'Game',
-          message: "Team must decide: continue guessing or end turn?",
-          timestamp: Date.now() + 2,
-          isVoting: true, // CRITICAL: Mark as voting message
-          voteType: 'meta_decision',
-          metaOptions: ['continue', 'end_turn'], // Used by the renderMessage function
-          pollId: metaPollId, // CRITICAL: Add explicit poll ID for easy matching with votes 
-          messageId: metaPollId // Also use same ID as messageId for redundancy
-        };
+        // Only create a new metapoll if there isn't an active one or if the previous one is older than 30 seconds
+        let shouldCreateNewMetaPoll = true;
+        let metaPollId;
         
-        setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
-        
-        // Send via WebSocket for real-time updates
-        if (socketRef.current?.readyState === WebSocket.OPEN) {
-          socketRef.current.send(JSON.stringify({
-            ...metaDecisionMsg,
-            type: 'discussion',
-            gameId: Number(id),
-            pollId: metaPollId,
-            messageId: metaPollId
-          }));
+        if (existingMetaPoll) {
+          const [savedPollId, savedTimestamp] = existingMetaPoll.split('|');
+          const pollAge = now - parseInt(savedTimestamp);
+          
+          // If we have a recent poll (less than 30 seconds old), use it instead of creating a new one
+          if (pollAge < 30000) {
+            console.log(`⚠️ Using existing metapoll: ${savedPollId} (${pollAge}ms old)`);
+            metaPollId = savedPollId;
+            shouldCreateNewMetaPoll = false;
+          } else {
+            console.log(`🕒 Existing metapoll expired: ${savedPollId} (${pollAge}ms old)`);
+          }
         }
         
-        // Request AI models to vote on continue/end turn
-        fetch(`/api/games/${id}/meta/discuss`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: "Should we continue guessing or end turn?",
+        // Create a new metapoll ID if needed
+        if (shouldCreateNewMetaPoll) {
+          metaPollId = `meta-${currentTeam}-${now}-decision-2`;
+          // Save this as the active metapoll for this team
+          localStorage.setItem(existingMetaPollKey, `${metaPollId}|${now}`);
+          console.log(`🆕 Created new metapoll: ${metaPollId}`);
+          
+          // Add a meta decision entry with explicit voting flags
+          const metaDecisionMsg = {
             team: currentTeam,
-            triggerVoting: true,
-            pollId: metaPollId,
-            messageId: metaPollId,
-            isVoting: true,
-            voteType: 'meta_decision'
-          })
-        }).catch(err => console.error("Error triggering AI meta vote:", err));
+            player: 'Game',
+            message: "Team must decide: continue guessing or end turn?",
+            timestamp: now,
+            isVoting: true, // CRITICAL: Mark as voting message
+            voteType: 'meta_decision',
+            metaOptions: ['continue', 'end_turn'], // Used by the renderMessage function
+            pollId: metaPollId, // CRITICAL: Add explicit poll ID for easy matching with votes 
+            messageId: metaPollId // Also use same ID as messageId for redundancy
+          };
+          
+          setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
+          
+          // Send via WebSocket for real-time updates
+          if (socketRef.current?.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              ...metaDecisionMsg,
+              type: 'discussion',
+              gameId: Number(id),
+              pollId: metaPollId,
+              messageId: metaPollId
+            }));
+          }
+          
+          // Request AI models to vote on continue/end turn
+          fetch(`/api/games/${id}/meta/discuss`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: "Should we continue guessing or end turn?",
+              team: currentTeam,
+              triggerVoting: true,
+              pollId: metaPollId,
+              messageId: metaPollId,
+              isVoting: true,
+              voteType: 'meta_decision'
+            })
+          }).catch(err => console.error("Error triggering AI meta vote:", err));
+        } else {
+          console.log(`🔄 Using existing poll ${metaPollId} instead of creating a duplicate`);
+        }
         
-        // Also create a meta vote display in the UI for humans to vote
+        // Always create a meta vote display in the UI for humans to vote
         setIsVotingActive(true);
       }
       
@@ -2422,7 +2484,47 @@ export default function GamePage() {
           
           {/* Make the scroll area take remaining height */}
           <ScrollArea className="pr-4 flex-1 h-full">
-            <div className="space-y-4 pb-4" ref={scrollAreaRef}>
+            <div className="space-y-4 pb-4 relative" ref={scrollAreaRef}>
+                {/* Add voting overlay when voting is in progress */}
+                {metaVotingInProgress && (
+                  <div 
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                      zIndex: 10,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      borderRadius: '8px',
+                      padding: '20px'
+                    }}
+                  >
+                    <div 
+                      style={{
+                        backgroundColor: 'rgba(245, 158, 11, 0.9)', // Amber color
+                        padding: '12px 20px',
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+                        color: 'white',
+                        fontWeight: 'bold',
+                        textAlign: 'center',
+                        maxWidth: '80%'
+                      }}
+                    >
+                      <div style={{fontSize: '24px', marginBottom: '8px'}}>
+                        ⏳ Voting in Progress
+                      </div>
+                      <div style={{fontSize: '16px'}}>
+                        Discussion is paused while the team votes on the next action
+                      </div>
+                    </div>
+                  </div>
+                )}
               {teamDiscussion.length === 0 && (
                 <div className="text-center p-4 text-gray-500">No discussion messages yet</div>
               )}
@@ -2626,14 +2728,20 @@ export default function GamePage() {
                   sendDiscussion();
                 }
               }}
+              disabled={metaVotingInProgress} // CRITICAL FIX: Disable input during voting
             />
             <Button 
               onClick={sendDiscussion}
-              disabled={!discussionInput.trim()}
-              className={`bg-${teamColor}-600 hover:bg-${teamColor}-700 text-white`}
+              disabled={!discussionInput.trim() || metaVotingInProgress} // CRITICAL FIX: Disable button during voting
+              className={`bg-${teamColor}-600 hover:bg-${teamColor}-700 text-white ${metaVotingInProgress ? 'opacity-50' : ''}`}
             >
               Send
             </Button>
+            {metaVotingInProgress && (
+              <div className="text-sm text-amber-600 absolute -bottom-6 left-0 right-0 text-center">
+                Voting in progress. Discussion paused.
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -3333,7 +3441,7 @@ export default function GamePage() {
                 onClick={() => {
                     console.log(`📌 Card clicked: ${word}`);
                     // CRITICAL: Block card clicks when voting is in progress
-                    if (isVotingActive || votingInProgress) {
+                    if (isVotingActive || metaVotingInProgress) {
                       console.log(`⚠️ Card click ignored: Voting in progress`);
                       toast({
                         title: "Voting in progress",
