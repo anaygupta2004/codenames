@@ -14,6 +14,8 @@ import { toast } from "@/hooks/use-toast"
 import { createInitialGame } from "@/lib/game"
 import { motion } from "framer-motion"
 
+
+
 // AI models available in the game
 const AI_MODELS = [
   { id: "gpt-4o", name: "GPT-4o", icon: SiOpenai, type: "advanced" },
@@ -36,6 +38,8 @@ type Team = {
 }
 
 export default function HomePage() {
+
+
   const [teams, setTeams] = useState<Team[]>([
     {
       name: "Red Team",
@@ -56,6 +60,8 @@ export default function HomePage() {
       ],
     },
   ])
+
+  
 
   const [searchQuery, setSearchQuery] = useState("")
   const [open, setOpen] = useState<Record<string, boolean>>({})

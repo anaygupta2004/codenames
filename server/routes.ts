@@ -16,7 +16,10 @@ import { insertGameSchema } from "@shared/schema";
 import type { Game, GameState, TeamDiscussionEntry, ConsensusVote, GameHistoryEntry } from "@shared/schema";
 import type { AIModel } from "./lib/ai-service";
 
+
+
 const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-1.5-pro"] as const;
+
 
 // Track active game discussions
 let latestGameId: number | null = null;  // Track most recent game
