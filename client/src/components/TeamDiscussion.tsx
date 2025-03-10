@@ -59,9 +59,10 @@ interface TeamDiscussionProps {
   gameId?: number;
   team?: string;
   onVote?: (word: string, team: string) => void;
+  votingInProgress?: boolean; // Add prop to indicate if voting is active
 }
 
-export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussionProps) {
+export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgress = false }: TeamDiscussionProps) {
   // CRITICAL FIX: Track votes by individual poll ID instead of globally
   // This ensures each poll is completely independent
   const [pollStates, setPollStates] = useState<{
@@ -794,6 +795,12 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
 
   // Completely rewritten word voting for truly independent polls tied to specific messages
   const handleWordVote = async (word: string, team: string, messageId: string) => {
+    // Check if voting is in progress - if so, prevent voting
+    if (votingInProgress) {
+      console.log(`⚠️ Cannot vote while voting is in progress`);
+      return;
+    }
+
     // First check if the word has already been revealed
     if (revealedCards.includes(word)) {
       console.log(`⚠️ Cannot vote for already revealed word: "${word}"`);
@@ -1226,6 +1233,12 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
 
   // Completely rewritten meta voting for truly independent polls tied to specific messages
   const handleMetaVote = async (action: 'continue' | 'end_turn' | 'discuss_more', team: string, messageId?: string) => {
+    // Check if voting is already in progress - if so, prevent submitting more votes
+    if (votingInProgress) {
+      console.log(`⚠️ Cannot submit meta vote while voting is already in progress`);
+      return;
+    }
+    
     // CRITICAL FIX: Ensure we have a valid messageId and it's consistent with any pollId
     // If messageId looks like a pollId, it's likely passed from the MetaPoll component
     const isPollId = messageId && messageId.startsWith('meta-');
@@ -1544,8 +1557,32 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
       padding: '10px',
       border: '1px solid #ccc',
       borderRadius: '4px',
-      backgroundColor: '#fff'
+      backgroundColor: '#fff',
+      position: 'relative' // Required for absolute positioning of overlay
     }}>
+      {/* Voting Overlay - Show when voting is in progress */}
+      {votingInProgress && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: 'rgba(0, 0, 0, 0.6)',
+          zIndex: 100,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center',
+          borderRadius: '4px',
+          color: 'white',
+          textAlign: 'center',
+          padding: '20px'
+        }}>
+          <div style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '10px' }}>Voting in Progress</div>
+          <div style={{ fontSize: '16px' }}>Please wait while team members cast their votes...</div>
+        </div>
+      )}
       {!normalizedMessages.length && <div style={{ color: 'gray', padding: '20px' }}>No messages yet</div>}
       <div style={{position: 'sticky', top: 0, backgroundColor: '#f8f9fa', padding: '4px', fontSize: '0.8em', color: '#666', zIndex: 10}}>
         <div>Team: {team} - Message count: {normalizedMessages.length}</div>
@@ -1851,20 +1888,22 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                             }}>
                               {wordConfidence > 0.7 ? "Auto-voting" : ""}
                               
-                              {/* Add vote button that passes specific message ID */}
+                              {/* Add vote button that passes specific message ID - disable during voting */}
                               <button 
                                 onClick={() => handleWordVote(word, team, getMessageId(msg))}
+                                disabled={votingInProgress}
                                 style={{
                                   fontSize: '0.85em',
                                   padding: '2px 8px',
-                                  backgroundColor: '#4CAF50',
+                                  backgroundColor: votingInProgress ? '#cccccc' : '#4CAF50',
                                   color: 'white',
                                   border: 'none',
                                   borderRadius: '4px',
-                                  cursor: 'pointer'
+                                  cursor: votingInProgress ? 'not-allowed' : 'pointer',
+                                  opacity: votingInProgress ? 0.7 : 1
                                 }}
                               >
-                                Vote
+                                {votingInProgress ? 'Voting...' : 'Vote'}
                               </button>
                             </div>
                           </div>
@@ -1917,11 +1956,17 @@ export function TeamDiscussion({ messages, gameId, team, onVote }: TeamDiscussio
                   gameId={gameId || 0}
                   timestamp={msg.timestamp}
                   messageId={msg.pollId || getMessageId(msg)} // Use pollId as messageId if available
+                  votingInProgress={votingInProgress} // Pass down the votingInProgress state
                   onVote={(action, team, msgId) => {
                     // CRITICAL FIX: Ensure pollId is passed as messageId when handling votes
                     // This improves poll association in the server responses
-                    console.log(`🎮 MetaPoll vote handler: action=${action}, team=${team}, msgId=${msgId || 'none'}, pollId=${msg.pollId || 'none'}`);
-                    handleMetaVote(action, team, msg.pollId || msgId);
+                    // Only handle the vote if voting isn't in progress
+                    if (!votingInProgress) {
+                      console.log(`🎮 MetaPoll vote handler: action=${action}, team=${team}, msgId=${msgId || 'none'}, pollId=${msg.pollId || 'none'}`);
+                      handleMetaVote(action, team, msg.pollId || msgId);
+                    } else {
+                      console.log(`⚠️ Cannot handle vote: voting in progress`);
+                    }
                   }}
                   key={`meta-poll-${getMessageId(msg)}`} // Add a unique key for better React rendering
                 />
