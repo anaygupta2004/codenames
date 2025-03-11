@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import type { TeamDiscussionEntry, ConsensusVote } from '@shared/schema';
 import { SiAnthropic } from 'react-icons/si';
 import { MetaPoll } from './MetaPoll';
+import { FaCaretUp, FaCaretDown } from 'react-icons/fa';
 
 // Helper function for proper markdown-style text formatting
 const formatMessage = (text: string) => {
@@ -52,6 +53,7 @@ type ExtendedTeamDiscussionEntry = TeamDiscussionEntry & {
     remainingTime: number;
   };
   type?: string;
+  turn?: number; // Added turn number for grouping messages
 };
 
 interface TeamDiscussionProps {
@@ -63,6 +65,11 @@ interface TeamDiscussionProps {
 }
 
 export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgress = false }: TeamDiscussionProps) {
+  // State for turn navigation
+  const [currentTurn, setCurrentTurn] = useState<number | null>(null);
+  const [maxTurn, setMaxTurn] = useState<number>(0);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const turnRefs = useRef<{[key: number]: HTMLDivElement | null}>({});
   // CRITICAL FIX: Track votes by individual poll ID instead of globally
   // This ensures each poll is completely independent
   const [pollStates, setPollStates] = useState<{
@@ -201,6 +208,41 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
     propsMessages: messages?.length || 0,
     localMessages: localDiscussion?.length || 0
   });
+  
+  // Process and group messages by turns
+  useEffect(() => {
+    if (normalizedMessages.length > 0) {
+      // Group messages into turns based on time gaps or explicit turn markers
+      let currentTurn = 1;
+      let lastTimestamp = 0;
+      const TIME_GAP_THRESHOLD = 60000; // 60 seconds gap indicates a new turn
+      
+      // First pass: assign turn numbers
+      const messagesWithTurns = normalizedMessages.map((msg, index) => {
+        // Check for time gap or explicit turn markers
+        if (index > 0 && (msg.timestamp - lastTimestamp > TIME_GAP_THRESHOLD || 
+          msg.message?.toLowerCase().includes('turn') || 
+          msg.type === 'turn_marker')) {
+          currentTurn++;
+        }
+        lastTimestamp = msg.timestamp;
+        
+        // Add turn number to message
+        return {
+          ...msg,
+          turn: currentTurn
+        };
+      });
+      
+      // Update max turn number
+      setMaxTurn(currentTurn);
+      
+      // If no current turn is selected, default to the latest
+      if (currentTurn > 0 && currentTurn !== null) {
+        setCurrentTurn(currentTurn);
+      }
+    }
+  }, [normalizedMessages]);
   
   // Combine both sources of messages to ensure we don't miss any
   // But also deduplicate them using a more comprehensive hash
@@ -795,12 +837,6 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
 
   // Completely rewritten word voting for truly independent polls tied to specific messages
   const handleWordVote = async (word: string, team: string, messageId: string) => {
-    // Check if voting is in progress - if so, prevent voting
-    if (votingInProgress) {
-      console.log(`⚠️ Cannot vote while voting is in progress`);
-      return;
-    }
-
     // First check if the word has already been revealed
     if (revealedCards.includes(word)) {
       console.log(`⚠️ Cannot vote for already revealed word: "${word}"`);
@@ -1233,12 +1269,6 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
 
   // Completely rewritten meta voting for truly independent polls tied to specific messages
   const handleMetaVote = async (action: 'continue' | 'end_turn' | 'discuss_more', team: string, messageId?: string) => {
-    // Check if voting is already in progress - if so, prevent submitting more votes
-    if (votingInProgress) {
-      console.log(`⚠️ Cannot submit meta vote while voting is already in progress`);
-      return;
-    }
-    
     // CRITICAL FIX: Ensure we have a valid messageId and it's consistent with any pollId
     // If messageId looks like a pollId, it's likely passed from the MetaPoll component
     const isPollId = messageId && messageId.startsWith('meta-');
@@ -1557,32 +1587,8 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
       padding: '10px',
       border: '1px solid #ccc',
       borderRadius: '4px',
-      backgroundColor: '#fff',
-      position: 'relative' // Required for absolute positioning of overlay
+      backgroundColor: '#fff'
     }}>
-      {/* Voting Overlay - Show when voting is in progress */}
-      {votingInProgress && (
-        <div style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          backgroundColor: 'rgba(0, 0, 0, 0.6)',
-          zIndex: 100,
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          alignItems: 'center',
-          borderRadius: '4px',
-          color: 'white',
-          textAlign: 'center',
-          padding: '20px'
-        }}>
-          <div style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '10px' }}>Voting in Progress</div>
-          <div style={{ fontSize: '16px' }}>Please wait while team members cast their votes...</div>
-        </div>
-      )}
       {!normalizedMessages.length && <div style={{ color: 'gray', padding: '20px' }}>No messages yet</div>}
       <div style={{position: 'sticky', top: 0, backgroundColor: '#f8f9fa', padding: '4px', fontSize: '0.8em', color: '#666', zIndex: 10}}>
         <div>Team: {team} - Message count: {normalizedMessages.length}</div>
@@ -1592,14 +1598,44 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
       {/* CRITICAL FIX: Filter messages to only show those for the current team */}
       {normalizedMessages
         .filter(msg => msg.team === team) // Only show messages for this team's discussion
-        .map((msg, index) => {
+        // Add turn filter when a turn is selected
+        .filter(msg => currentTurn === null || msg.turn === currentTurn)
+        .map((msg, index, filteredArray) => {
           // Get message ID
           const messageId = `${msg.timestamp}-${msg.player}`;
           const isAnimated = animatedMessages.includes(messageId);
           
+          // Check if this is the first message of a turn for scrolling reference
+          const isFirstMessageOfTurn = index === 0 || 
+            (index > 0 && filteredArray[index-1].turn !== msg.turn);
+          
           // Get voting count - NEVER skip critical messages with suggestions/voting
           const hasSuggestions = msg.suggestedWords && msg.suggestedWords.length > 0;
-          const isVotingMessage = msg.isVoting || msg.voteType;
+          
+          // CRITICAL FIX: Ensure all voting-related messages are preserved in discussion history
+          // by checking additional vote indicators and the active polls list
+          let isVotingMessage = msg.isVoting || msg.voteType || msg.leadToMetaVote || msg.pollId;
+          
+          // Also check active polls list for this message's ID
+          if (!isVotingMessage && msg.team === team) {
+            try {
+              const activePollsList = JSON.parse(localStorage.getItem('activePollsList') || '[]');
+              const msgIdentifier = getMessageId(msg);
+              
+              // Generate a potential poll ID format that matches what MetaPoll would use
+              const potentialPollId = `meta-${team}-${msgIdentifier}`;
+              
+              // Check if any active poll references this message
+              if (activePollsList.includes(potentialPollId)) {
+                isVotingMessage = true;
+                // Ensure message has necessary attributes to display poll
+                msg.isVoting = true; // Add flag to ensure rendering
+                msg.pollId = potentialPollId; // Use consistent ID format
+              }
+            } catch (e) {
+              console.error("Error checking active polls:", e);
+            }
+          }
           
           // Create a stable key that helps avoid React rendering issues
           const stableKey = `${msg.timestamp}-${msg.player}-${index}-${hasSuggestions ? 'sugg' : ''}-${isVotingMessage ? 'vote' : ''}`;
@@ -1607,12 +1643,15 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
           return (
             <div 
               key={stableKey}
+              ref={isFirstMessageOfTurn && msg.turn ? (el) => { turnRefs.current[msg.turn!] = el; } : null}
               className={`message ${msg.team} ${isVotingMessage ? 'voting-message' : ''} ${hasSuggestions ? 'suggestion-message' : ''}`}
               style={{ 
                 padding: '8px',
                 margin: '4px',
                 border: '2px solid',
                 borderColor: msg.team === 'red' ? '#ff0000' : '#0000ff',
+                // Highlight current turn messages
+                boxShadow: currentTurn === msg.turn ? '0 0 8px 2px rgba(0,0,0,0.2)' : 'none',
                 backgroundColor: isVotingMessage ? (msg.team === 'red' ? '#fff8f8' : '#f8f8ff') : 
                                 hasSuggestions ? (msg.team === 'red' ? '#ffeeee' : '#eeeeff') : '#ffffff',
                 display: 'flex',
@@ -1624,8 +1663,26 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
                 transition: 'opacity 0.3s ease-in-out, transform 0.3s ease-in-out'
               }}
             >
-            <div style={{ fontSize: '0.8em', color: '#666' }}>
-              {new Date(msg.timestamp).toLocaleTimeString()}
+            <div style={{ 
+              fontSize: '0.8em', 
+              color: '#666',
+              display: 'flex',
+              justifyContent: 'space-between'
+            }}>
+              <div>
+                {new Date(msg.timestamp).toLocaleTimeString()}
+              </div>
+              {msg.turn && (
+                <div style={{
+                  backgroundColor: msg.team === 'red' ? '#ffdddd' : '#ddddff',
+                  padding: '0px 6px',
+                  borderRadius: '8px',
+                  fontSize: '0.8em',
+                  fontWeight: 'bold'
+                }}>
+                  Turn {msg.turn}
+                </div>
+              )}
             </div>
             <div style={{ 
               display: 'flex',
@@ -1642,29 +1699,32 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
                   fontWeight: 'bold',
                   color: msg.team === 'red' ? '#cc0000' : '#0066cc'
                 }}>
-                  {/* Display player name, icon, and ID */}
+                  {/* Display player name and icon */}
                   {getModelIcon(msg.player)}
                   {' '}
                   {typeof msg.player === 'string' && msg.player.includes('#') 
-                    ? `${msg.player.split('#')[0]} (ID: ${msg.player.split('#')[1].substring(0, 5)})`
+                    ? `${msg.player.split('#')[0]}`
                     : msg.player}
                 </span>
                 
-                {/* Display unique ID in top right for ALL messages */}
+                {/* Display unique model ID in top right for ALL messages */}
                 <span style={{
                   fontSize: '0.75em',
                   backgroundColor: '#f0f0f0',
                   padding: '2px 6px',
                   borderRadius: '12px',
                   color: '#666',
-                  marginLeft: 'auto'
+                  marginLeft: 'auto',
+                  fontWeight: 'bold'
                 }}>
-                  ID: {(() => {
-                    // Generate a stable ID for this message
-                    const msgId = getMessageId(msg);
-                    // Extract last 5 characters for display
-                    return msgId.substring(Math.max(0, msgId.length - 5));
-                  })()}
+                  {typeof msg.player === 'string' && msg.player.includes('#') 
+                    ? `#${msg.player.split('#')[1].substring(0, 5)}` // Display model's unique ID
+                    : `#${(() => {
+                      // Generate a stable ID for this message if no explicit ID
+                      const msgId = getMessageId(msg);
+                      // Extract last 5 characters for display
+                      return msgId.substring(Math.max(0, msgId.length - 5));
+                    })()}`}
                 </span>
               </div>
               <span 
@@ -1888,22 +1948,20 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
                             }}>
                               {wordConfidence > 0.7 ? "Auto-voting" : ""}
                               
-                              {/* Add vote button that passes specific message ID - disable during voting */}
+                              {/* Add vote button that passes specific message ID */}
                               <button 
                                 onClick={() => handleWordVote(word, team, getMessageId(msg))}
-                                disabled={votingInProgress}
                                 style={{
                                   fontSize: '0.85em',
                                   padding: '2px 8px',
-                                  backgroundColor: votingInProgress ? '#cccccc' : '#4CAF50',
+                                  backgroundColor: '#4CAF50',
                                   color: 'white',
                                   border: 'none',
                                   borderRadius: '4px',
-                                  cursor: votingInProgress ? 'not-allowed' : 'pointer',
-                                  opacity: votingInProgress ? 0.7 : 1
+                                  cursor: 'pointer'
                                 }}
                               >
-                                {votingInProgress ? 'Voting...' : 'Vote'}
+                                Vote
                               </button>
                             </div>
                           </div>
@@ -1951,30 +2009,103 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
                 
                 {/* Use MetaPoll component with message ID as poll ID to ensure independence */}
                 <MetaPoll 
-                  pollId={msg.pollId || `meta-${team}-${getMessageId(msg)}`}
+                  pollId={msg.pollId || `meta-${team}-${getMessageId(msg)}-${Date.now()}`} // Add timestamp to force new instance
                   team={team}
                   gameId={gameId || 0}
                   timestamp={msg.timestamp}
                   messageId={msg.pollId || getMessageId(msg)} // Use pollId as messageId if available
-                  votingInProgress={votingInProgress} // Pass down the votingInProgress state
                   onVote={(action, team, msgId) => {
                     // CRITICAL FIX: Ensure pollId is passed as messageId when handling votes
                     // This improves poll association in the server responses
-                    // Only handle the vote if voting isn't in progress
-                    if (!votingInProgress) {
-                      console.log(`🎮 MetaPoll vote handler: action=${action}, team=${team}, msgId=${msgId || 'none'}, pollId=${msg.pollId || 'none'}`);
-                      handleMetaVote(action, team, msg.pollId || msgId);
-                    } else {
-                      console.log(`⚠️ Cannot handle vote: voting in progress`);
-                    }
+                    console.log(`🎮 MetaPoll vote handler: action=${action}, team=${team}, msgId=${msgId || 'none'}, pollId=${msg.pollId || 'none'}`);
+                    handleMetaVote(action, team, msg.pollId || msgId);
                   }}
-                  key={`meta-poll-${getMessageId(msg)}`} // Add a unique key for better React rendering
+                  key={`meta-poll-${getMessageId(msg)}-${Date.now()}`} // Add unique timestamp to force component remount
                 />
               </div>
             )}
           </div>
         );
       })}
+      {/* Turn Navigation Controls */}
+      <div style={{
+        position: 'sticky',
+        bottom: '20px',
+        right: '20px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        borderRadius: '8px',
+        padding: '8px',
+        boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)',
+        zIndex: 100,
+        marginLeft: 'auto'
+      }}>
+        <button 
+          onClick={() => {
+            if (currentTurn && currentTurn < maxTurn) {
+              const nextTurn = currentTurn + 1;
+              setCurrentTurn(nextTurn);
+              // Scroll to the turn's first message
+              if (turnRefs.current[nextTurn]) {
+                turnRefs.current[nextTurn]?.scrollIntoView({ behavior: 'smooth' });
+              }
+            }
+          }}
+          disabled={currentTurn === maxTurn}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: currentTurn === maxTurn ? 'not-allowed' : 'pointer',
+            opacity: currentTurn === maxTurn ? 0.5 : 1,
+            fontSize: '24px',
+            color: team === 'red' ? '#cc0000' : '#0066cc',
+            padding: '4px'
+          }}
+          title="Go to next turn"
+        >
+          <FaCaretUp />
+        </button>
+        
+        <div style={{
+          padding: '4px 8px',
+          borderRadius: '4px',
+          backgroundColor: team === 'red' ? '#ffeeee' : '#eeeeff',
+          fontWeight: 'bold',
+          fontSize: '14px',
+          marginTop: '4px',
+          marginBottom: '4px'
+        }}>
+          {currentTurn ? `Turn ${currentTurn}/${maxTurn}` : 'Latest'}
+        </div>
+        
+        <button 
+          onClick={() => {
+            if (currentTurn && currentTurn > 1) {
+              const prevTurn = currentTurn - 1;
+              setCurrentTurn(prevTurn);
+              // Scroll to the turn's first message
+              if (turnRefs.current[prevTurn]) {
+                turnRefs.current[prevTurn]?.scrollIntoView({ behavior: 'smooth' });
+              }
+            }
+          }}
+          disabled={currentTurn === 1}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: currentTurn === 1 ? 'not-allowed' : 'pointer',
+            opacity: currentTurn === 1 ? 0.5 : 1,
+            fontSize: '24px',
+            color: team === 'red' ? '#cc0000' : '#0066cc',
+            padding: '4px'
+          }}
+          title="Go to previous turn"
+        >
+          <FaCaretDown />
+        </button>
+      </div>
     </div>
   );
 }

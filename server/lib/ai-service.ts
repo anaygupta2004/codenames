@@ -4,6 +4,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { b } from '../../baml_client'
 import { type GameHistoryEntry, type TeamDiscussionEntry, type ConsensusVote } from "@shared/schema";
 import dotenv from 'dotenv';
+import pkg from 'lodash';
+const { debounce } = pkg;
 
 dotenv.config();
 
@@ -224,8 +226,30 @@ export async function getSpymasterClue(
   gameState: GameState | null | undefined,
   redScore: number | undefined,
   blueScore: number | undefined,
-  revealedCards: string[] = []
+  revealedCards: string[] = [],
+  useBackgroundThinking: boolean = true
 ): Promise<{ word: string; number: number; reasoning?: string }> {
+  // First check if we should use the background thinking cache
+  if (useBackgroundThinking && gameState) {
+    // Determine which team we're generating a clue for
+    const currentTeam = gameState.currentTurn === "red_turn" ? "red" : "blue";
+    const gameId = gameState.gameId;
+    
+    // Try to get the best cached clue from our continuous background thinking
+    const bestClue = getBestSpymasterClue(gameId, currentTeam);
+    
+    if (bestClue) {
+      console.log(`🏆 Using cached best clue from background thinking: ${bestClue.word} (${bestClue.number}) with score ${bestClue.score.toFixed(2)}`);
+      return {
+        word: bestClue.word,
+        number: bestClue.number,
+        reasoning: bestClue.reasoning
+      };
+    } else {
+      console.log(`⚠️ No cached clues available, generating new clue on demand`);
+    }
+  }
+  
   // Ensure model is valid
   const validatedModel = validateModel(model);
   
@@ -243,6 +267,21 @@ export async function getSpymasterClue(
     // Extract from last history entry
     const lastTurn = safeGameHistory[safeGameHistory.length - 1].turn;
     currentTeam = typeof lastTurn === 'string' && lastTurn.includes("red") ? "red" : "blue";
+  }
+  
+  // Create a unique key for the cache based on game state
+  const cacheKey = `${validatedModel}-${currentTeam}-${teamWords.join(",")}-${revealedCards.join(",")}`;
+  const gameStateHash = `${redScore}-${blueScore}-${revealedCards.length}`;
+  
+  // Check if we have a cached clue from background thinking
+  if (useBackgroundThinking && spymasterThinkingCache.has(cacheKey)) {
+    const cachedThinking = spymasterThinkingCache.get(cacheKey)!;
+    
+    // Only use the cached clue if it's from the current game state
+    if (cachedThinking.gameState === gameStateHash && Date.now() - cachedThinking.timestamp < 5 * 60 * 1000) {
+      console.log(`Using cached spymaster clue from background thinking: ${cachedThinking.clue.word} (${cachedThinking.clue.number})`)
+      return cachedThinking.clue;
+    }
   }
   
   const teamScore = currentTeam === "red" ? redScore : blueScore;
@@ -3335,6 +3374,44 @@ const teamMemory = new Map<string, {
   clueHistory: { clue: string; number: number; success: boolean }[];
 }>();
 
+// Cache for spymaster background thinking
+type SpymasterThinkingCache = {
+  clue: { word: string; number: number; reasoning?: string };
+  score: number;
+  timestamp: number;
+  gameState: string; // To track if game state has changed
+  scoreDetails?: {
+    teamWordScore: number;
+    assassinPenalty: number;
+    opponentPenalty: number;
+    neutralPenalty: number;
+    uniquenessBonus: number;
+  };
+};
+
+const spymasterThinkingCache = new Map<string, SpymasterThinkingCache>();
+
+// Get the best clue from the cache for a given game state
+export function getBestSpymasterClue(gameId: number, team: "red" | "blue"): { word: string; number: number; reasoning?: string; score: number } | null {
+  // Get all cache entries for this team
+  const teamEntries = Array.from(spymasterThinkingCache.entries())
+    .filter(([key]) => key.includes(`-${team}-${gameId}`))
+    .map(([_, entry]) => entry);
+  
+  if (teamEntries.length === 0) {
+    return null;
+  }
+  
+  // Sort by score (highest first) and return the best one
+  const bestEntry = teamEntries.sort((a, b) => b.score - a.score)[0];
+  return {
+    word: bestEntry.clue.word,
+    number: bestEntry.clue.number,
+    reasoning: bestEntry.clue.reasoning,
+    score: bestEntry.score
+  };
+}
+
 export function updateTeamMemory(
   team: string,
   clue: { word: string; number: number },
@@ -3683,6 +3760,366 @@ function updateDiscussionMemoryLocal(
 }
 
 // Functions now imported from game-memory.ts
+
+// New function to trigger background thinking for spymaster to improve clues over time
+export async function backgroundSpymasterThinking(
+  gameId: number,
+  model: string | AIModel,
+  words: string[],
+  teamWords: string[],
+  opposingWords: string[],
+  assassinWord: string,
+  gameHistory: GameHistoryEntry[] | null | undefined,
+  gameState: string | null | undefined,
+  redScore: number | undefined,
+  blueScore: number | undefined,
+  revealedCards: string[] = [],
+  currentTeam: "red" | "blue"
+): Promise<void> {
+  // Skip if the model is invalid
+  if (!VALID_MODELS.includes(model as AIModel)) {
+    console.log(`Skipping background thinking for invalid model: ${model}`);
+    return;
+  }
+
+  try {
+    const validatedModel = validateModel(model as AIModel);
+    
+    // Filter words to only include unrevealed ones
+    const unrevealed = teamWords.filter(word => !revealedCards.includes(word));
+    if (unrevealed.length === 0) {
+      console.log(`No unrevealed words for team ${currentTeam}, skipping background thinking`);
+      return;
+    }
+    
+    // Create a unique key for the cache
+    const cacheKey = `${validatedModel}-${currentTeam}-${gameId}-${unrevealed.join(",")}`;
+    const gameStateHash = `${redScore}-${blueScore}-${revealedCards.length}`;
+    
+    // Get existing cached entries for this particular configuration
+    const existing = spymasterThinkingCache.get(cacheKey);
+    
+    // Generate a new clue if:
+    // 1. We don't have one cached yet, or
+    // 2. The game state has changed, or
+    // 3. It's been a while since we last thought about this (continuous improvement)
+    const needsNewThinking = !existing || 
+                           existing.gameState !== gameStateHash || 
+                           Date.now() - existing.timestamp > 30000; // Re-think every 30 seconds
+    
+    if (needsNewThinking) {
+      console.log(`🧠 Deep background thinking for spymaster ${model} (team: ${currentTeam})`);
+      
+      // Call getSpymasterClue with a flag to avoid using the cache (to prevent recursion)
+      const clue = await getSpymasterClue(
+        model as AIModel,
+        words,
+        teamWords,
+        opposingWords,
+        assassinWord,
+        gameHistory,
+        gameState as any, // Type cast to match expected type
+        redScore,
+        blueScore,
+        revealedCards,
+        false // Don't use the cache to avoid recursion
+      );
+      
+      // Score the clue using our sophisticated scoring system
+      const { score, details } = evaluateClueQuality(clue, teamWords, opposingWords, assassinWord, gameHistory);
+      
+      // Update the cache with the new clue and its score
+      spymasterThinkingCache.set(cacheKey, {
+        clue,
+        score,
+        timestamp: Date.now(),
+        gameState: gameStateHash,
+        scoreDetails: details
+      });
+      
+      // Detailed logging for debugging and monitoring
+      console.log(`🧠 Background thinking results for ${clue.word} (${clue.number}):`); 
+      console.log(`  Score: ${score.toFixed(2)}`);
+      console.log(`  Team word score: +${details.teamWordScore.toFixed(2)}`);
+      console.log(`  Assassin penalty: -${details.assassinPenalty.toFixed(2)}`);
+      console.log(`  Opponent penalty: -${details.opponentPenalty.toFixed(2)}`);
+      console.log(`  Neutral penalty: -${details.neutralPenalty.toFixed(2)}`);
+      console.log(`  Uniqueness bonus: +${details.uniquenessBonus.toFixed(2)}`);
+      
+      // Log dangerous words if any were found
+      if (details.dangerousWords && details.dangerousWords.length > 0) {
+        console.log(`  ⚠️ DANGEROUS WORD ALERTS:`);
+        details.dangerousWords.forEach(warning => {
+          console.log(`    ${warning}`);
+        });
+        if (score < 0) {
+          console.log(`  🛑 CLUE VETOED - Too dangerous to use!`);
+        }
+      }
+      
+      // Get all current clues for this team and find the best one
+      const bestClue = getBestSpymasterClue(gameId, currentTeam);
+      if (bestClue) {
+        console.log(`🏆 Current best clue for ${currentTeam}: ${bestClue.word} (${bestClue.number}) - Score: ${bestClue.score.toFixed(2)}`);
+      }
+    } else {
+      console.log(`⏭️ Skipping background thinking for ${model} (team: ${currentTeam}) - already thought recently`);
+    }
+  } catch (error) {
+    console.error('Error in background spymaster thinking:', error);
+    // Don't throw, this is a background process
+  }
+}
+
+// Helper function to evaluate clue quality with a sophisticated scoring system
+function evaluateClueQuality(
+  clue: { word: string; number: number; reasoning?: string },
+  teamWords: string[],
+  opposingWords: string[],
+  assassinWord: string,
+  gameHistory: GameHistoryEntry[] | null | undefined
+): { score: number; details: { teamWordScore: number; assassinPenalty: number; opponentPenalty: number; neutralPenalty: number; uniquenessBonus: number; dangerousWords: string[] } } {
+  // Calculate the base team word score - this is our positive reward component
+  // We want to reward clues that connect more team words
+  const teamWordScore = clue.number * 15; // Increased from 10 to emphasize team word connections
+  
+  // Get past clues to check for uniqueness
+  const safeGameHistory = Array.isArray(gameHistory) ? gameHistory : [];
+  const pastClues = safeGameHistory
+    .filter(entry => entry.type === "clue")
+    .map(entry => {
+      const content = entry.content || "";
+      // Extract the actual clue word from format like "Spymaster gives clue: word (3)"
+      const match = content.match(/clue: ([a-zA-Z0-9]+)/);
+      return match ? match[1].toLowerCase() : "";
+    })
+    .filter(word => word.length > 0);
+  
+  // Bonus for novel, unique clues not used before
+  const uniquenessBonus = !pastClues.includes(clue.word.toLowerCase()) ? 20 : 0;
+  
+  // CRITICAL: Heavily penalize any semantic similarity to the assassin word
+  // The precise number doesn't matter since this is relative to other clues
+  // but we want this to be a severe penalty that's hard to overcome
+  const assassinSimilarity = estimateWordSimilarity(clue.word, assassinWord);
+  const assassinPenalty = assassinSimilarity * 700; // Increased from 500
+  
+  // Track dangerous words for detailed reporting
+  const dangerousWords: string[] = [];
+  if (assassinSimilarity > 0.3) {
+    dangerousWords.push(`ASSASSIN: ${assassinWord} (${(assassinSimilarity * 100).toFixed(0)}%)`);
+  }
+  
+  // Significant penalty for opponent words - we don't want our team
+  // to accidentally guess opponent words
+  let opponentPenalty = 0;
+  for (const oppWord of opposingWords) {
+    const similarity = estimateWordSimilarity(clue.word, oppWord);
+    opponentPenalty += similarity * 300; // Increased from 200 for greater safety
+    
+    // Track highly similar opposing words
+    if (similarity > 0.3) {
+      dangerousWords.push(`OPPONENT: ${oppWord} (${(similarity * 100).toFixed(0)}%)`);
+    }
+  }
+  
+  // Check for potential misleading clues by testing team members' understanding
+  // For each team word, estimate how likely it is to be guessed from this clue
+  const teamWordSimilarities = teamWords.map(word => ({
+    word,
+    similarity: estimateWordSimilarity(clue.word, word)
+  }));
+  
+  // Sort by similarity to see which team words are most likely to be guessed
+  const sortedTeamSimilarities = teamWordSimilarities.sort((a, b) => b.similarity - a.similarity);
+  
+  // Check if we have fewer high-similarity words than the clue number suggests
+  // This indicates the clue might be misleading and cause guessing of non-team words
+  const highSimilarityTeamWords = sortedTeamSimilarities.filter(item => item.similarity > 0.3);
+  if (highSimilarityTeamWords.length < clue.number) {
+    // The clue suggests more connections than we can confidently identify
+    // This increases risk of guessing wrong words - apply an additional penalty
+    const misleadingPenalty = (clue.number - highSimilarityTeamWords.length) * 50;
+    opponentPenalty += misleadingPenalty;
+  }
+  
+  // Light penalty for neutral words - suboptimal but not as bad as opponent words
+  const allWords = [assassinWord, ...teamWords, ...opposingWords];
+  const remainingWords = words.filter(w => !allWords.includes(w)); // These are neutral words
+  
+  let neutralPenalty = 0;
+  const neutralSimilarities = remainingWords.map(word => ({
+    word,
+    similarity: estimateWordSimilarity(clue.word, word)
+  }));
+  
+  // Penalize for neutral words with high similarity
+  const highSimilarityNeutrals = neutralSimilarities.filter(item => item.similarity > 0.3);
+  neutralPenalty = highSimilarityNeutrals.reduce((sum, item) => sum + (item.similarity * 50), 0);
+  
+  // Add highest similarity neutral words to dangerous list
+  highSimilarityNeutrals
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 3) // Just report the top 3 most similar neutrals
+    .forEach(item => {
+      dangerousWords.push(`NEUTRAL: ${item.word} (${(item.similarity * 100).toFixed(0)}%)`);
+    });
+  
+  // Calculate the final score
+  const score = teamWordScore + uniquenessBonus - assassinPenalty - opponentPenalty - neutralPenalty;
+  
+  // Apply a strong veto if the clue is objectively dangerous
+  // If the top dangerous word has over 70% similarity, the clue is too risky
+  const hasVeryDangerousWords = dangerousWords.some(warning => {
+    const percentMatch = parseInt(warning.match(/\((\d+)%\)/)![1]);
+    return percentMatch > 60; // If any word has >60% similarity, veto the clue
+  });
+  
+  // Apply an extreme penalty for objectively dangerous clues
+  const finalScore = hasVeryDangerousWords ? -1000 : score;
+  
+  // Return both the score and the detailed breakdown
+  return {
+    score: finalScore,
+    details: {
+      teamWordScore,
+      assassinPenalty,
+      opponentPenalty,
+      neutralPenalty,
+      uniquenessBonus,
+      dangerousWords
+    }
+  };
+}
+
+// Semantic similarity matcher that uses known relationships between words
+const SEMANTIC_RELATIONSHIPS: Record<string, string[]> = {
+  // Celestial objects and space
+  'celestial': ['sun', 'moon', 'star', 'planet', 'space', 'galaxy', 'orbit', 'sky', 'heaven', 'universe', 'cosmos', 'astronomical'],
+  'space': ['moon', 'sun', 'star', 'planet', 'galaxy', 'rocket', 'nasa', 'astronaut', 'orbit', 'cosmos'],
+  'sky': ['moon', 'sun', 'star', 'cloud', 'blue', 'heaven', 'bird', 'fly', 'air'],
+  'astronomy': ['moon', 'sun', 'star', 'planet', 'telescope', 'galaxy', 'orbit'],
+  'night': ['moon', 'star', 'dark', 'evening', 'sleep', 'dream', 'owl'],
+  
+  // Water and ocean
+  'water': ['ocean', 'sea', 'lake', 'river', 'stream', 'pool', 'rain', 'wet', 'splash', 'swim', 'drink', 'flow', 'wave'],
+  'ocean': ['sea', 'water', 'wave', 'beach', 'shore', 'island', 'ship', 'fish', 'shark', 'whale', 'deep', 'blue'],
+  'sea': ['ocean', 'water', 'wave', 'beach', 'shore', 'island', 'ship', 'fish', 'shark', 'whale', 'deep', 'blue'],
+  'liquid': ['water', 'drink', 'flow', 'pour', 'spill'],
+  
+  // Animals and nature
+  'animal': ['dog', 'cat', 'bird', 'fish', 'lion', 'tiger', 'bear', 'wolf', 'horse', 'cow', 'pig', 'elephant', 'mouse', 'rat'],
+  'nature': ['tree', 'flower', 'plant', 'animal', 'mountain', 'river', 'forest', 'green', 'earth', 'environment'],
+  'wild': ['animal', 'jungle', 'forest', 'lion', 'tiger', 'bear', 'wolf', 'untamed', 'savage'],
+  
+  // Tech and computers
+  'computer': ['screen', 'keyboard', 'mouse', 'program', 'code', 'software', 'hardware', 'internet', 'web', 'data', 'file'],
+  'technology': ['computer', 'phone', 'internet', 'app', 'software', 'hardware', 'digital', 'electronic', 'device'],
+  'digital': ['computer', 'binary', 'electronic', 'virtual', 'online', 'cyber', 'internet'],
+  
+  // Transportation
+  'vehicle': ['car', 'truck', 'bus', 'train', 'plane', 'ship', 'boat', 'bicycle', 'motorcycle', 'drive', 'ride'],
+  'travel': ['car', 'airplane', 'train', 'trip', 'vacation', 'journey', 'visit', 'explore', 'adventure'],
+  'flight': ['airplane', 'airport', 'pilot', 'jet', 'wing', 'fly', 'sky', 'air'],
+  
+  // Food and dining
+  'food': ['eat', 'meal', 'breakfast', 'lunch', 'dinner', 'restaurant', 'cook', 'kitchen', 'recipe', 'taste', 'flavor'],
+  'fruit': ['apple', 'orange', 'banana', 'grape', 'berry', 'sweet', 'juice', 'tree'],
+  'vegetable': ['carrot', 'potato', 'tomato', 'broccoli', 'green', 'salad', 'garden', 'plant'],
+  
+  // Games and sports
+  'game': ['play', 'fun', 'board', 'card', 'video', 'sport', 'team', 'win', 'lose', 'score', 'competition'],
+  'sport': ['play', 'game', 'team', 'ball', 'athlete', 'competition', 'win', 'lose', 'score', 'field', 'court'],
+  'ball': ['sport', 'game', 'round', 'throw', 'catch', 'kick', 'bounce', 'play'],
+  
+  // Art and music
+  'art': ['paint', 'draw', 'artist', 'museum', 'gallery', 'creative', 'design', 'color', 'sculpture'],
+  'music': ['song', 'sound', 'rhythm', 'melody', 'instrument', 'band', 'concert', 'listen', 'hear', 'play'],
+  'instrument': ['music', 'play', 'sound', 'band', 'orchestra', 'guitar', 'piano', 'drum', 'violin'],
+  
+  // Buildings and structures
+  'building': ['house', 'office', 'skyscraper', 'apartment', 'structure', 'construct', 'architect', 'floor', 'roof', 'door', 'window'],
+  'home': ['house', 'family', 'live', 'room', 'door', 'window', 'roof', 'comfort', 'safe'],
+  'structure': ['building', 'bridge', 'tower', 'construct', 'form', 'shape', 'architecture'],
+  
+  // Time and events
+  'time': ['clock', 'hour', 'minute', 'second', 'day', 'night', 'past', 'present', 'future', 'early', 'late'],
+  'event': ['party', 'celebration', 'ceremony', 'festival', 'concert', 'meeting', 'conference', 'wedding'],
+  'holiday': ['christmas', 'halloween', 'thanksgiving', 'celebration', 'vacation', 'trip', 'festive'],
+  
+  // Light and vision
+  'light': ['bright', 'sun', 'lamp', 'shine', 'glow', 'dark', 'day', 'see', 'vision', 'flash'],
+  'color': ['red', 'blue', 'green', 'yellow', 'rainbow', 'paint', 'bright', 'dark', 'shade', 'hue'],
+  'dark': ['night', 'black', 'shadow', 'light', 'dim', 'blind'],
+  
+  // Weather and elements
+  'weather': ['rain', 'snow', 'sun', 'wind', 'cloud', 'storm', 'temperature', 'hot', 'cold', 'warm', 'climate'],
+  'temperature': ['hot', 'cold', 'warm', 'cool', 'heat', 'freeze', 'thermometer', 'degree', 'weather'],
+  'fire': ['hot', 'burn', 'flame', 'heat', 'smoke', 'light', 'cook', 'camp', 'fireplace'],
+  
+  // Body and health
+  'body': ['head', 'arm', 'leg', 'hand', 'foot', 'heart', 'blood', 'bone', 'skin', 'muscle', 'health'],
+  'health': ['doctor', 'hospital', 'medicine', 'sick', 'well', 'disease', 'cure', 'healthy', 'exercise', 'diet'],
+  'medical': ['doctor', 'hospital', 'nurse', 'medicine', 'health', 'patient', 'sick', 'disease', 'cure', 'treat'],
+  
+  // Military and conflict
+  'military': ['army', 'navy', 'soldier', 'war', 'weapon', 'tank', 'gun', 'bomb', 'fight', 'battle', 'defense'],
+  'war': ['battle', 'soldier', 'weapon', 'fight', 'enemy', 'army', 'victory', 'defeat', 'peace', 'military'],
+  'weapon': ['gun', 'sword', 'knife', 'bomb', 'missile', 'military', 'war', 'fight', 'attack', 'defense'],
+};
+
+// More comprehensive semantic similarity estimator
+function estimateWordSimilarity(word1: string, word2: string): number {
+  word1 = word1.toLowerCase();
+  word2 = word2.toLowerCase();
+  
+  // Direct match is worst case (1.0 similarity)
+  if (word1 === word2) return 1.0;
+  
+  // Check semantic relationships first (most important)
+  // This is a critical check to avoid dangerous clues like "celestial" leading to "moon"
+  for (const [concept, relatedWords] of Object.entries(SEMANTIC_RELATIONSHIPS)) {
+    // Check if one word is a concept and the other is in its related words
+    if ((word1 === concept && relatedWords.includes(word2)) || 
+        (word2 === concept && relatedWords.includes(word1))) {
+      return 0.9; // Very high semantic relationship score
+    }
+    
+    // Check if both words are in the same concept group
+    if (relatedWords.includes(word1) && relatedWords.includes(word2)) {
+      return 0.8; // High similarity for words in the same concept group
+    }
+  }
+  
+  // Check for word root similarities
+  const root1 = word1.substring(0, Math.min(5, word1.length));
+  const root2 = word2.substring(0, Math.min(5, word2.length));
+  if (root1 === root2 && root1.length >= 4) {
+    // Words share same root (e.g., "product" and "production")
+    return 0.7;
+  }
+  
+  // Check for prefix/suffix matches
+  if (word1.startsWith(word2) || word2.startsWith(word1)) return 0.6;
+  if (word1.endsWith(word2) || word2.endsWith(word1)) return 0.5;
+  
+  // Check for substring matches
+  if (word1.includes(word2) || word2.includes(word1)) return 0.4;
+  
+  // Check for shared letters (weakest signal)
+  const sharedLetters = [...new Set(word1.split(''))].filter(c => word2.includes(c));
+  const uniqueLetters = [...new Set([...word1.split(''), ...word2.split('')])];
+  const letterSimilarity = sharedLetters.length / uniqueLetters.length;
+  
+  return letterSimilarity * 0.3; // Scale down letter-based similarity
+}
+
+// Create a debounced version of the background thinking function
+export const debouncedBackgroundThinking = debounce(backgroundSpymasterThinking, 5000, {
+  leading: true,
+  trailing: true,
+  maxWait: 30000
+});
 
 // Export clients 
 export { openai, anthropic, genAI };
