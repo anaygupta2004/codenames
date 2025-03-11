@@ -9,18 +9,23 @@ import { useParams } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertCircle, CheckCircle2, XCircle, Clock, Timer, Bot } from "lucide-react";
+import { AlertCircle, CheckCircle2, XCircle, Clock, Timer, Bot, MessageSquare, Info } from "lucide-react";
 import { SiOpenai, SiAnthropic, SiGooglegemini, SiX } from "react-icons/si";
 import { storage } from "@/lib/storage";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { MetaPoll } from "@/components/MetaPoll";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 // Update AI model display info with correct icon components
 const AI_MODEL_INFO = {
-  "gpt-4o": { name: "GPT-4", Icon: SiOpenai },
-  "claude-3-5-sonnet-20241022": { name: "Claude", Icon: SiAnthropic },
-  "grok-2-1212": { name: "Grok", Icon: SiX },
-  "gemini-1.5-pro": { name: "Gemini", Icon: SiGooglegemini }
+  "gpt-4o": { name: "GPT-4", Icon: SiOpenai, color: "#74aa9c", logo: "/ai-logos/openai.svg" },
+  "claude-3-5-sonnet-20241022": { name: "Claude", Icon: SiAnthropic, color: "#b980f0", logo: "/ai-logos/anthropic.svg" },
+  "grok-2-1212": { name: "Grok", Icon: SiX, color: "#333333", logo: "/ai-logos/x.svg" },
+  "gemini-1.5-pro": { name: "Gemini", Icon: SiGooglegemini, color: "#4285f4", logo: "/ai-logos/gemini.svg" },
+  "mistral": { name: "Mistral", Icon: Bot, color: "#7c3aed", logo: "/ai-logos/mistral.svg" },
+  "deepseek": { name: "DeepSeek", Icon: Bot, color: "#5e81ac", logo: "/ai-logos/deepseek.svg" }
 } as const;
 
 type AIModel = keyof typeof AI_MODEL_INFO;
@@ -37,6 +42,69 @@ type GameLogEntry = {
 
 const getModelDisplayName = (model: AIModel): string => {
   return AI_MODEL_INFO[model]?.name || model;
+}
+
+// Confidence Circle Component for displaying vote confidence percentage
+function ConfidenceCircle({ confidence }: { confidence: number }) {
+  const [progress, setProgress] = useState(0);
+  const size = 48; // Increased from 32 (1.5x bigger)
+  const strokeWidth = 5; // Slightly increased
+  const radius = (size - strokeWidth) / 2;
+  const circumference = radius * 2 * Math.PI;
+  const offset = circumference - (progress / 100) * circumference;
+
+  // Animate the circle filling
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setProgress(confidence);
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [confidence]);
+
+  // Determine color based on confidence
+  const getColor = (value: number) => {
+    if (value >= 70) return "rgb(34, 197, 94)"; // green-500
+    if (value >= 50) return "rgb(245, 158, 11)"; // amber-500
+    return "rgb(239, 68, 68)"; // red-500
+  };
+
+  return (
+    <motion.div 
+      className="relative flex items-center justify-center"
+      initial={{ scale: 0.5, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{ duration: 0.3 }}
+    >
+      <svg width={size} height={size} className="transform -rotate-90">
+        {/* Background circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          strokeWidth={strokeWidth}
+          stroke="rgba(229, 231, 235, 0.5)" // gray-200 with opacity
+          fill="white"
+        />
+        {/* Progress circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          strokeWidth={strokeWidth}
+          stroke={getColor(confidence)}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          fill="transparent"
+          className="transition-all duration-1000 ease-out"
+        />
+      </svg>
+      {/* Percentage text */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-xs font-semibold">{confidence}%</span>
+      </div>
+    </motion.div>
+  );
 }
 
 // Add this new component for the poll UI
@@ -198,12 +266,10 @@ export default function GamePage() {
   const [discussionTimer, setDiscussionTimer] = useState<number>(60);
   const [isDiscussing, setIsDiscussing] = useState(false);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.7);
-  // Game state variables
+  const [votingInProgress, setVotingInProgress] = useState(false);
   const [lastClue, setLastClue] = useState<{ word: string; number: number } | null>(null);
   const [discussionInput, setDiscussionInput] = useState("");
   const [isVotingActive, setIsVotingActive] = useState(false);
-  // Track if there's a meta vote in progress specifically
-  const [metaVotingInProgress, setMetaVotingInProgress] = useState(false);
   const [localDiscussion, setLocalDiscussion] = useState<TeamDiscussionEntry[]>([]);
   const [displayedPolls, setDisplayedPolls] = useState(new Set<string>());
   
@@ -650,8 +716,8 @@ export default function GamePage() {
       
       // Add a fresh discussion start message with a clear separator
       const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-      const newTurnMessage = {
-        team: currentTeam,
+      const newTurnMessage: TeamDiscussionEntry = {
+        team: currentTeam as "red" | "blue",
         player: 'Game',
         message: `=== ${currentTeam.toUpperCase()} TEAM'S TURN - New Discussion Begins ===`,
         timestamp: Date.now(),
@@ -884,7 +950,19 @@ export default function GamePage() {
         // Reset all local state for clean turn transition
         setLastClue(null);
         setIsDiscussing(false);
-        setTurnTimer(60); // Reset timer for next turn
+        
+        // Only reset timer if it's not a spymaster giving a clue
+        // In this timer expiration context, we're always resetting the timer
+        // but we'll maintain the pattern for consistency
+        const isSpymasterGivingClue = localStorage.getItem(`game-${id}-next-action`) === 'request_clue';
+        
+        if (!isSpymasterGivingClue) {
+            setTurnTimer(60); // Reset timer only when not giving clue
+        }
+        
+        // Clear displayedPolls on turn change so that new polls can be created in the next turn
+        setDisplayedPolls(new Set());
+        
         aiTurnInProgress.current = false;
         processedGameState.current = false;
         setVotedOnWords({});
@@ -1142,7 +1220,7 @@ export default function GamePage() {
         
         // IMMEDIATELY set voting state to true for UI rendering
         setIsVotingActive(true);
-        setMetaVotingInProgress(true);
+        setVotingInProgress(true);
         
         // Add a meta decision entry with explicit voting flags
         const metaDecisionMsg = {
@@ -1302,11 +1380,13 @@ export default function GamePage() {
                 // Add message only if this is a recent suggestion (within last few messages)
                 const isRecentSuggestion = teamDiscussion.indexOf(msg) >= teamDiscussion.length - 3;
                 if (isRecentSuggestion) {
-                  const alreadyGuessedMsg = {
-                    team: currentTeam,
+                  const alreadyGuessedMsg: TeamDiscussionEntry = {
+                    team: currentTeam as "red" | "blue",
                     player: 'Game',
                     message: `"${word}" was already correctly guessed. Try a different word.`,
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
+                    suggestedWords: [],
+                    confidences: []
                   };
                   
                   // Add to discussion for immediate feedback
@@ -1375,8 +1455,8 @@ export default function GamePage() {
           console.log(`🎮 Found high confidence next guess: ${bestWord.word}`);
           
           // Add this to the meta decision message
-          const nextGuessMsg = {
-            team: currentTeam,
+          const nextGuessMsg: TeamDiscussionEntry = {
+            team: currentTeam as "red" | "blue",
             player: 'Game',
             message: `Team can continue and guess "${bestWord.word}" (${Math.round(bestWord.avgConfidence * 100)}% confidence) or end turn.`,
             timestamp: Date.now() + 1,
@@ -1572,6 +1652,40 @@ export default function GamePage() {
       
       console.log(`🔄 FORCE TURN CHANGE: ${currentTeam} → ${nextTeam}, reason: ${reason}`);
       
+      // If timer expired, immediately terminate any active meta votes without resolution
+      if (reason === 'timer_expired') {
+        console.log('⏰ Timer expired - terminating any active meta votes');
+        
+        // Immediately update UI state to reflect voting termination
+        setIsVotingActive(false);
+        setVotingInProgress(false);
+        setDisplayedPolls(new Set()); // Clear all displayed polls
+        
+        // Clean up active meta poll in localStorage to prevent duplicates
+        const redPollKey = `active-metapoll-red`;
+        const bluePollKey = `active-metapoll-blue`;
+        localStorage.removeItem(redPollKey);
+        localStorage.removeItem(bluePollKey);
+        
+        // Clear poll message tracking maps to prevent duplicates on next polls
+        localStorage.removeItem('pollMessageIdMap');
+        localStorage.removeItem('pollIdDeduplicationMap');
+        
+        // Send a clear notification via WebSocket that voting was terminated due to time
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            type: 'discussion',
+            gameId: Number(game.id),
+            team: currentTeam,
+            player: 'Game',
+            content: `⏱️ Time expired! Turn ended automatically.`,
+            message: `⏱️ Time expired! Turn ended automatically.`,
+            timestamp: Date.now(),
+            isSystemMessage: true
+          }));
+        }
+      }
+      
       // THREE PARALLEL METHODS to ensure the turn absolutely changes:
       
       // METHOD 1: Meta vote with high priority flag (most reliable way)
@@ -1584,6 +1698,7 @@ export default function GamePage() {
           action: 'end_turn',
           timerExpired: reason === 'timer_expired',
           highPriority: true,
+          terminateActivePolls: reason === 'timer_expired', // Add flag to terminate active polls
           timestamp: Date.now()
         })
       })
@@ -1633,7 +1748,23 @@ export default function GamePage() {
           // RESET ALL CLIENT STATE for a clean transition
           setLastClue(null);
           setIsDiscussing(false);
-          setTurnTimer(60); // Reset timer explicitly for the next turn
+          
+          // Ensure all voting related state is cleared
+          setIsVotingActive(false);
+          setVotingInProgress(false);
+          
+          // Only reset timer if it's not a spymaster giving a clue
+          // Check if we're transitioning from a game state without a clue to receiving a clue
+          const isSpymasterGivingClue = reason === 'spymaster_clue' || 
+                localStorage.getItem(`game-${game.id}-next-action`) === 'request_clue';
+          
+          if (!isSpymasterGivingClue) {
+            setTurnTimer(60); // Reset timer only when not giving clue
+          }
+          
+          // Clear displayedPolls when turn changes to allow fresh polls in the new turn
+          setDisplayedPolls(new Set());
+          
           aiTurnInProgress.current = false;
           processedGameState.current = false;
           aiDiscussionTriggered.current = false;
@@ -1697,6 +1828,7 @@ export default function GamePage() {
           // If timer is already at 0, that means it expired but turn didn't change
           // Force the turn change again as a failsafe
           if (!turnChangeInProgress) {
+            // When timer expires, immediately end any ongoing meta voting process
             forceTurnChange('timer_expired');
           }
           return 0;
@@ -1711,6 +1843,7 @@ export default function GamePage() {
               team: game.currentTurn === "red_turn" ? "red" : "blue",
               player: 'Game',
               content: `⚠️ 5 seconds remaining!`,
+              message: `⚠️ 5 seconds remaining!`,
               timestamp: Date.now(),
               timeWarning: true
             }));
@@ -1876,6 +2009,69 @@ export default function GamePage() {
       return game?.revealedCards?.includes(word) ? "text-white" : "text-black";
     }
     return game?.revealedCards?.includes(word) ? "text-white" : "text-gray-900";
+  };
+  
+  // State for toggling model icons and confidence circles
+  const [showModelIcons, setShowModelIcons] = useState(true);
+  
+  // Save model icons preference
+  useEffect(() => {
+    try {
+      localStorage.setItem("showModelIcons", JSON.stringify(showModelIcons));
+    } catch (e) {
+      console.error("Could not save showModelIcons preference", e);
+    }
+  }, [showModelIcons]);
+  
+  // Function to get model votes for a word - processed from teamDiscussion/wordVoteCounts
+  const getModelVotesForWord = (word: string) => {
+    // Collect model votes from discussion entries
+    const allVotes: {model: string; vote: boolean; confidence: number}[] = [];
+    
+    // Only get votes from the current team
+    const currentTeam = game?.currentTurn === "red_turn" ? "red" : "blue";
+    const recentMessages = game?.teamDiscussion?.slice(-30) || [];
+    
+    // Track highest confidence vote for each unique model ID
+    const modelVoteMap: Record<string, {confidence: number, vote: boolean}> = {};
+    
+    // Process messages to find votes, filtering by current team only
+    recentMessages.forEach(entry => {
+      // Skip if entry is not from current team
+      if (entry.team !== currentTeam) return;
+      
+      if (!entry.suggestedWords || entry.suggestedWords.length === 0) return;
+      
+      // Get the index of this word in the suggestedWords array
+      const wordIndex = entry.suggestedWords.indexOf(word);
+      if (wordIndex === -1) return; // Word not found in this message
+      
+      // Get confidence for this word
+      const confidence = entry.confidences && wordIndex < entry.confidences.length ? 
+        entry.confidences[wordIndex] : 0.5;
+      
+      // Preserve the full model ID (including any unique identifier)
+      const fullModelId = entry.player;
+      
+      // Only keep the highest confidence vote for each unique model ID
+      if (!modelVoteMap[fullModelId] || confidence > modelVoteMap[fullModelId].confidence) {
+        modelVoteMap[fullModelId] = {
+          confidence: confidence,
+          vote: true
+        };
+      }
+    });
+    
+    // Convert map to array of votes (one per unique model ID with highest confidence)
+    Object.entries(modelVoteMap).forEach(([fullModelId, voteInfo]) => {
+      allVotes.push({
+        model: fullModelId,
+        vote: voteInfo.vote,
+        confidence: voteInfo.confidence
+      });
+    });
+    
+    return allVotes;
   };
 
   // ENHANCED: Much more aggressive detection of voting activity with auto-creation of meta decisions
@@ -2129,8 +2325,8 @@ export default function GamePage() {
         }));
         
         // Announcement message
-        const autoGuessMsg = {
-          team: currentTeam,
+        const autoGuessMsg: TeamDiscussionEntry = {
+          team: currentTeam as "red" | "blue",
           player: 'Game',
           message: `Auto-guessing high confidence word: ${bestWord.word}`,
           timestamp: Date.now(),
@@ -2167,8 +2363,8 @@ export default function GamePage() {
         setDisplayedPolls(prev => new Set([...prev, bestWord.word]));
         
         // Create vote message
-        const voteMsg = {
-          team: currentTeam,
+        const voteMsg: TeamDiscussionEntry = {
+          team: currentTeam as "red" | "blue",
           player: 'Game',
           message: `Team vote suggested for word: ${bestWord.word}`,
           timestamp: Date.now(),
@@ -2205,14 +2401,24 @@ export default function GamePage() {
           
           // If threshold reached, make the guess
           if (data.thresholdReached) {
-            const guessMsg = {
-              team: currentTeam,
+            const guessMsg: TeamDiscussionEntry = {
+              team: currentTeam as "red" | "blue",
               player: 'Game',
               message: `Threshold reached, guessing: ${bestWord.word}`,
-              timestamp: Date.now() + 1
+              timestamp: Date.now() + 1,
+              suggestedWords: [],
+              confidences: []
             };
             
             setLocalDiscussion(prev => [...prev, guessMsg]);
+            
+            // Remove the word from displayedPolls when threshold is reached
+            // to allow new polls to be created for this word in the future
+            setDisplayedPolls(prev => {
+              const newPolls = new Set([...prev]);
+              newPolls.delete(bestWord.word);
+              return newPolls;
+            });
             
             // Make the guess
             setTimeout(() => {
@@ -2407,6 +2613,12 @@ export default function GamePage() {
       const player = msg.player || '';
       const message = msg.message || msg.content || '';
       
+      // For meta polls, use pollId to ensure uniqueness
+      if (msg.voteType === 'meta_decision' || msg.metaOptions?.length > 0) {
+        const pollId = msg.pollId || `meta-${msg.team}-${timestamp}`;
+        return `metapoll-${pollId}`;
+      }
+      
       // Include a bit of message content to better distinguish messages
       return `${timestamp}-${player}-${message.slice(0, 10)}`;
     };
@@ -2484,47 +2696,7 @@ export default function GamePage() {
           
           {/* Make the scroll area take remaining height */}
           <ScrollArea className="pr-4 flex-1 h-full">
-            <div className="space-y-4 pb-4 relative" ref={scrollAreaRef}>
-                {/* Add voting overlay when voting is in progress */}
-                {metaVotingInProgress && (
-                  <div 
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      backgroundColor: 'rgba(255, 255, 255, 0.7)',
-                      zIndex: 10,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      borderRadius: '8px',
-                      padding: '20px'
-                    }}
-                  >
-                    <div 
-                      style={{
-                        backgroundColor: 'rgba(245, 158, 11, 0.9)', // Amber color
-                        padding: '12px 20px',
-                        borderRadius: '8px',
-                        boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-                        color: 'white',
-                        fontWeight: 'bold',
-                        textAlign: 'center',
-                        maxWidth: '80%'
-                      }}
-                    >
-                      <div style={{fontSize: '24px', marginBottom: '8px'}}>
-                        ⏳ Voting in Progress
-                      </div>
-                      <div style={{fontSize: '16px'}}>
-                        Discussion is paused while the team votes on the next action
-                      </div>
-                    </div>
-                  </div>
-                )}
+            <div className="space-y-4 pb-4" ref={scrollAreaRef}>
               {teamDiscussion.length === 0 && (
                 <div className="text-center p-4 text-gray-500">No discussion messages yet</div>
               )}
@@ -2560,7 +2732,7 @@ export default function GamePage() {
                         </div>
                         
                         <MetaPoll 
-                          pollId={entry.pollId || `meta-${teamColor}-${entry.timestamp}`}
+                          pollId={entry.pollId || `meta-${teamColor}-${entry.timestamp}-${Date.now()}`}
                           team={teamColor}
                           gameId={Number(id)}
                           timestamp={entry.timestamp}
@@ -2666,7 +2838,10 @@ export default function GamePage() {
                                         player === 'human' ? 'bg-blue-100' : 
                                         isAI ? `bg-${teamColor}-100` : 'bg-gray-100'
                                       } flex items-center justify-center shadow-sm border-2 border-white`}
-                                      title={player === 'human' ? 'You' : player}
+                                      title={player === 'human' ? 'You' : 
+                                            typeof player === 'string' && player.includes('#') 
+                                              ? `${baseModelName} #${player.split('#')[1]}` 
+                                              : player}
                                     >
                                       {player === 'human' ? (
                                         <span className="text-sm">👤</span>
@@ -2728,16 +2903,16 @@ export default function GamePage() {
                   sendDiscussion();
                 }
               }}
-              disabled={metaVotingInProgress} // CRITICAL FIX: Disable input during voting
+              disabled={votingInProgress} // CRITICAL FIX: Disable input during voting
             />
             <Button 
               onClick={sendDiscussion}
-              disabled={!discussionInput.trim() || metaVotingInProgress} // CRITICAL FIX: Disable button during voting
-              className={`bg-${teamColor}-600 hover:bg-${teamColor}-700 text-white ${metaVotingInProgress ? 'opacity-50' : ''}`}
+              disabled={!discussionInput.trim() || votingInProgress} // CRITICAL FIX: Disable button during voting
+              className={`bg-${teamColor}-600 hover:bg-${teamColor}-700 text-white ${votingInProgress ? 'opacity-50' : ''}`}
             >
               Send
             </Button>
-            {metaVotingInProgress && (
+            {votingInProgress && (
               <div className="text-sm text-amber-600 absolute -bottom-6 left-0 right-0 text-center">
                 Voting in progress. Discussion paused.
               </div>
@@ -2757,8 +2932,12 @@ export default function GamePage() {
     isVotingMsg = false
   ) => {
     const isAI = entry.player !== 'Game' && entry.player !== 'human';
-    const ModelIcon = isAI && AI_MODEL_INFO[entry.player as AIModel]?.Icon 
-      ? AI_MODEL_INFO[entry.player as AIModel]?.Icon 
+    // Extract base model for icon lookup but preserve the full ID
+    const baseModelName = typeof entry.player === 'string' && entry.player.includes('#') 
+      ? entry.player.split('#')[0] 
+      : entry.player;
+    const ModelIcon = isAI && AI_MODEL_INFO[baseModelName as AIModel]?.Icon 
+      ? AI_MODEL_INFO[baseModelName as AIModel]?.Icon 
       : Bot;
     
     // Determine actual message team color (red or blue)
@@ -2867,28 +3046,42 @@ export default function GamePage() {
           )}
         </div>
         <div className="flex-1">
-          <div className={`font-medium ${isAI ? `text-${msgTeamColor}-700` : 'text-gray-800'}`}>
-            {isAI ? getModelDisplayName(entry.player as AIModel) : entry.player}
-            <span className="text-xs text-gray-500 ml-2">
-              {entry.timestamp 
-                ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
-                : new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-              {!isCurrentTeam && (
-                <span className={`ml-1 text-${msgTeamColor}-500 font-medium`}>({msgTeamColor === "red" ? "RED" : "BLUE"})</span>
+          <div className={`font-medium ${isAI ? `text-${msgTeamColor}-700` : 'text-gray-800'} flex justify-between items-center`}>
+            <div className="flex items-center">
+              <div>
+                {isAI ? getModelDisplayName(entry.player as AIModel) : entry.player}
+                <span className="text-xs text-gray-500 ml-2">
+                  {entry.timestamp 
+                    ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+                    : new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                  {!isCurrentTeam && (
+                    <span className={`ml-1 text-${msgTeamColor}-500 font-medium`}>({msgTeamColor === "red" ? "RED" : "BLUE"})</span>
+                  )}
+                </span>
+              </div>
+              
+              {/* Special badge for important messages - now inside the flex container */}
+              {(hasSuggestions || isVotingMsg) && (
+                <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${
+                  hasSuggestions ? "bg-amber-100 text-amber-800" : 
+                  isVotingMsg ? "bg-blue-100 text-blue-800" : ""
+                }`}>
+                  {hasSuggestions && entry.suggestedWords?.length ? `${entry.suggestedWords.length} word${entry.suggestedWords.length > 1 ? 's' : ''}` : ''}
+                  {hasSuggestions && isVotingMsg ? ' + ' : ''}
+                  {isVotingMsg ? 'vote' : ''}
+                </span>
               )}
-            </span>
+            </div>
             
-            {/* Special badge for important messages */}
-            {(hasSuggestions || isVotingMsg) && (
-              <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${
-                hasSuggestions ? "bg-amber-100 text-amber-800" : 
-                isVotingMsg ? "bg-blue-100 text-blue-800" : ""
-              }`}>
-                {hasSuggestions && entry.suggestedWords?.length ? `${entry.suggestedWords.length} word${entry.suggestedWords.length > 1 ? 's' : ''}` : ''}
-                {hasSuggestions && isVotingMsg ? ' + ' : ''}
-                {isVotingMsg ? 'vote' : ''}
-              </span>
-            )}
+            {/* Display unique model ID in top right for all messages */}
+            <span className="text-xs font-bold bg-gray-100 px-2 py-1 rounded-md text-gray-600">
+              {typeof entry.player === 'string' && entry.player.includes('#') 
+                ? `#${entry.player.split('#')[1].substring(0, 5)}` // Display model's unique ID
+                : `#${(() => {
+                  // Generate a stable ID for this message if no explicit ID
+                  return entry.timestamp.toString().substring(Math.max(0, entry.timestamp.toString().length - 5));
+                })()}`}
+            </span>
           </div>
           
           {/* Message content with special styling for important messages */}
@@ -3095,7 +3288,7 @@ export default function GamePage() {
                       <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">
                         {entry.player === "human" ? "You" : 
                          typeof entry.player === 'string' && entry.player.includes('#') 
-                           ? entry.player.split('#')[0]
+                           ? `${entry.player.split('#')[0]} #${entry.player.split('#')[1]}`
                            : entry.player}
                       </span>
                     )}
@@ -3252,6 +3445,22 @@ export default function GamePage() {
         newState[key].add('human');
         return newState;
       });
+      
+      // Mark this specific poll as voted on in localStorage
+      // This is critical for ensuring we track which polls have been interacted with
+      localStorage.setItem(`voted-meta-${pollId}`, 'true');
+      
+      // Store the turn state when this vote happened for reference
+      if (game && game.turn) {
+        localStorage.setItem(`meta-vote-turn-${pollId}`, String(game.turn));
+      }
+      
+      // Clear displayedPolls to ensure new polls can be created after this vote
+      // This is critical to prevent poll state unification issues
+      if (action === "continue" || action === "end_turn") {
+        console.log("🔄 Clearing displayed polls after meta vote to allow fresh polls");
+        setDisplayedPolls(new Set());
+      }
     })
     .catch(error => {
       console.error("Error submitting meta vote:", error);
@@ -3414,11 +3623,18 @@ export default function GamePage() {
             />
             <span className="font-medium text-white">Spymaster View</span>
           </div>
+          <div className="flex items-center gap-2 bg-white/30 backdrop-blur-sm px-4 py-2 rounded-lg shadow-sm">
+            <Switch
+              checked={showModelIcons}
+              onCheckedChange={setShowModelIcons}
+            />
+            <span className="font-medium text-white">Show Model Icons</span>
+          </div>
         </div>
       </div>
 
       {/* Fixed height for both panels */}
-      <div className="max-w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[calc(100vh-12rem)]">
+      <div className="max-w-full mx-auto grid grid-cols-1 lg:grid-cols-11 gap-4 min-h-[calc(100vh-12rem)]">
         {/* Left sidebar - Game Log with fixed height */}
         <div className="lg:col-span-3">
           <Card className="h-[calc(100vh-16rem)] bg-white/95 backdrop-blur shadow-xl overflow-hidden">
@@ -3434,49 +3650,150 @@ export default function GamePage() {
         {/* Game board */}
         <div className="lg:col-span-5">
           <div className="grid grid-cols-5 gap-5">
-            {game.words.map((word) => (
-              <Card
-                key={word}
-                className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105 h-40 flex items-center justify-center shadow-md`}
-                onClick={() => {
-                    console.log(`📌 Card clicked: ${word}`);
-                    // CRITICAL: Block card clicks when voting is in progress
-                    if (isVotingActive || metaVotingInProgress) {
-                      console.log(`⚠️ Card click ignored: Voting in progress`);
-                      toast({
-                        title: "Voting in progress",
-                        description: "Wait for team decision before making next move",
-                        variant: "warning",
-                      });
-                      return;
-                    }
-                    
-                    if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
-                      console.log(`🎮 Making guess for word: ${word}`);
-                      const audio = new Audio("notification.mp3");
-                      audio.play();
-                      makeGuess.mutate(word);
-                    } else {
-                      console.log(`⚠️ Card click ignored: ${
-                        game.revealedCards.includes(word) ? 'already revealed' :
-                        game.gameState?.includes("win") ? 'game already won' :
-                        aiTurnInProgress.current ? 'AI turn in progress' : 'unknown reason'
-                      }`);
-                    }
-                }}
-              >
+            {game.words.map((word) => {
+              // Get model votes for this word
+              const modelVotes = getModelVotesForWord(word);
+              
+              // Calculate average confidence if there are votes
+              const averageConfidence = modelVotes.length > 0 
+                ? Math.round(modelVotes.reduce((acc, vote) => acc + vote.confidence * 100, 0) / modelVotes.length)
+                : 0;
+                
+              return (
+                <Card
+                  key={word}
+                  className={`${getCardColor(word)} cursor-pointer transition-all hover:scale-105 h-40 flex items-center justify-center shadow-md relative`}
+                  onClick={() => {
+                      console.log(`📌 Card clicked: ${word}`);
+                      // CRITICAL: Block card clicks when voting is in progress
+                      if (isVotingActive || votingInProgress) {
+                        console.log(`⚠️ Card click ignored: Voting in progress`);
+                        toast({
+                          title: "Voting in progress",
+                          description: "Wait for team decision before making next move",
+                          variant: "warning",
+                        });
+                        return;
+                      }
+                      
+                      if (!game.revealedCards.includes(word) && !game.gameState?.includes("win") && !aiTurnInProgress.current) {
+                        console.log(`🎮 Making guess for word: ${word}`);
+                        const audio = new Audio("notification.mp3");
+                        audio.play();
+                        makeGuess.mutate(word);
+                      } else {
+                        console.log(`⚠️ Card click ignored: ${
+                          game.revealedCards.includes(word) ? 'already revealed' :
+                          game.gameState?.includes("win") ? 'game already won' :
+                          aiTurnInProgress.current ? 'AI turn in progress' : 'unknown reason'
+                        }`);
+                      }
+                  }}
+                >
+                  {/* Model Icons (Top Left) - Only show in operative view when toggle is on AND card is not revealed AND game is not in win state */}
+                  {!isSpymasterView && showModelIcons && modelVotes.length > 0 && !game.revealedCards.includes(word) && !game.gameState?.includes("win") && (
+                    <div className="absolute -top-1 -left-1 flex">
+                      <AnimatePresence>
+                        {modelVotes.slice(0, 3).map((vote, index) => {
+                          // Extract base model name for icon lookup but preserve full ID for uniqueness
+                          const baseModelName = vote.model.split('#')[0];
+                          const modelInfo = AI_MODEL_INFO[baseModelName as keyof typeof AI_MODEL_INFO] || 
+                                           { name: vote.model, Icon: Bot, color: "#888888" };
+                          const ModelIcon = modelInfo.Icon;
+                          
+                          return (
+                            <motion.div 
+                              key={`${vote.model}-${index}`}
+                              initial={{ scale: 0, x: -5, y: -5, opacity: 0 }}
+                              animate={{ scale: 1, x: index > 0 ? index * -8 : 0, y: 0, opacity: 1 }}
+                              exit={{ scale: 0, opacity: 0 }}
+                              transition={{ delay: index * 0.1, duration: 0.3 }}
+                              style={{ zIndex: 10 - index }}
+                              className="relative"
+                            >
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <div
+                                      className="h-9 w-9 rounded-full border-2 border-white shadow-md flex items-center justify-center" 
+                                      style={{ 
+                                        backgroundColor: "#ffffff",
+                                        borderColor: '#e5e7eb', 
+                                        boxShadow: '0 1px 3px rgba(0,0,0,0.2)' 
+                                      }}
+                                    >
+                                      <ModelIcon 
+                                        style={{ 
+                                          color: vote.model === "claude-3-5-sonnet-20241022" || vote.model === "anthropic" ? "#000000" : modelInfo.color 
+                                        }} 
+                                        size={16} 
+                                      />
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p>
+                                      {vote.model.includes('#') ? `${getModelDisplayName(vote.model.split('#')[0] as AIModel)} #${vote.model.split('#')[1]}` : getModelDisplayName(vote.model as AIModel)}: {Math.round(vote.confidence * 100)}% confidence
+                                    </p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </motion.div>
+                          );
+                        })}
+                        
+                        {/* Show +X for additional models */}
+                        {modelVotes.length > 3 && (
+                          <motion.div 
+                            initial={{ scale: 0, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            transition={{ delay: 0.3, duration: 0.3 }}
+                            className="relative" 
+                            style={{ marginLeft: "-8px" }}
+                          >
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div className="h-9 w-9 rounded-full border-2 border-white bg-white flex items-center justify-center" style={{ borderColor: '#e5e7eb', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }}>
+                                    <span className="text-xs text-gray-700">+{modelVotes.length - 3}</span>
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <div className="text-sm">
+                                    {modelVotes.slice(3).map((vote, i) => (
+                                      <div key={i}>
+                                        {vote.model.includes('#') ? `${getModelDisplayName(vote.model.split('#')[0] as AIModel)} #${vote.model.split('#')[1]}` : getModelDisplayName(vote.model as AIModel)}: {Math.round(vote.confidence * 100)}%
+                                      </div>
+                                    ))}
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
+
+                  {/* Confidence Circle (Top Right) - Only show in operative view when toggle is on AND card is not revealed AND game is not in win state */}
+                  {!isSpymasterView && showModelIcons && modelVotes.length > 0 && !game.revealedCards.includes(word) && !game.gameState?.includes("win") && (
+                    <div className="absolute -top-2 -right-2">
+                      <ConfidenceCircle confidence={averageConfidence} />
+                    </div>
+                  )}
+                      
                   <CardContent className="p-8 text-center flex items-center justify-center h-full w-full">
                     <span className={`font-medium text-3xl ${getTextColor(word)}`}>
-                    {word}
-                  </span>
-                </CardContent>
-              </Card>
-            ))}
+                      {word}
+                    </span>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         </div>
 
         {/* Right sidebar - Team Discussion with matching height */}
-        <div className="lg:col-span-4">
+        <div className="lg:col-span-3">
           <Card className="h-[calc(100vh-16rem)] bg-white/95 backdrop-blur shadow-xl overflow-hidden flex flex-col">
             {renderTeamDiscussion()}
           </Card>

@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import type { MetaVote } from "@shared/schema"
 import { SiAnthropic, SiGooglecloud, SiOpenai, SiX } from "react-icons/si"
 import { motion } from "framer-motion"
@@ -15,7 +15,6 @@ interface MetaPollProps {
   gameScore?: { red: number; blue: number }
   onVotingStatusChange?: (isVoting: boolean) => void
   teamOperativeCount?: number
-  votingInProgress?: boolean // Add prop to accept votingInProgress from parent
 }
 
 // Helper function to get icons for different AI models
@@ -56,68 +55,104 @@ interface VotesState {
   error?: string;
 }
 
-export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, onVotingStatusChange, teamOperativeCount = 0, votingInProgress: parentVotingInProgress }: MetaPollProps) {
+export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, onVotingStatusChange, teamOperativeCount = 0 }: MetaPollProps) {
   // Initialize the votes state with proper typing
-  const [votes, setVotes] = useState<VotesState>({
-    continue: { count: 0, voters: [] },
-    end_turn: { count: 0, voters: [] },
-    discuss_more: { count: 0, voters: [] }
-  })
+  // CRITICAL: Use a function that runs on every mount to ensure proper state initialization
+  const initialVotes = () => {
+    // CRITICAL FIX: ALWAYS start with completely empty votes for every poll instance
+    // This ensures fresh UI display (0-0) for ALL polls
+    const emptyVotes = {
+      continue: { count: 0, voters: [] },
+      end_turn: { count: 0, voters: [] },
+      discuss_more: { count: 0, voters: [] }
+    };
+    
+    // Check if this is a new poll based on timestamp embedded in ID
+    const containsTimestamp = pollId && /\d{13}/.test(pollId); // Check for 13-digit timestamp
+    
+    // If pollId contains a timestamp, it's guaranteed to be a fresh instance
+    // Always use empty votes for these to ensure clean UI
+    if (containsTimestamp) {
+      console.log(`🔄 Fresh poll detected with timestamp in ID: ${pollId}`);
+      
+      // Clear any previous localStorage for this specific poll format
+      const previousKeys = Object.keys(localStorage).filter(key => 
+        key.startsWith('poll_votes_') && key.includes(team) && !key.includes(pollId));
+      
+      // Log what we're clearing for debugging
+      if (previousKeys.length > 0) {
+        console.log(`🗑 Clearing ${previousKeys.length} previous poll states for team ${team}`);
+      }
+      
+      // Start completely fresh
+      return emptyVotes;
+    }
+    
+    // Even for older polls with no timestamp, default to empty state for consistency
+    console.log(`🔄 Using empty vote state for poll ${pollId}`);
+    return emptyVotes;
+  };
+  
+  const [votes, setVotes] = useState<VotesState>(initialVotes())
   
   // Track if all operatives have voted
   const [allOperativesVoted, setAllOperativesVoted] = useState(false)
   
   // Track if voting is in progress to disable discussion
-  // Use the parent's votingInProgress state if provided, otherwise use component's local state
-  const [internalVotingInProgress, setInternalVotingInProgress] = useState(true)
-  
-  // Use either the parent's votingInProgress state (if provided) or the internal state
-  const votingInProgress = parentVotingInProgress !== undefined ? parentVotingInProgress : internalVotingInProgress
-  
-  // Notify parent component about voting status changes
-  useEffect(() => {
-    if (onVotingStatusChange) {
-      onVotingStatusChange(internalVotingInProgress)
-    }
-  }, [internalVotingInProgress, onVotingStatusChange])
+  const [votingInProgress, setVotingInProgress] = useState(true)
 
   const [animateIn, setAnimateIn] = useState(false)
+  // Use a ref to track voting completion timeout to prevent multiple state changes
+  const votingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     const timer = setTimeout(() => setAnimateIn(true), 100)
     return () => clearTimeout(timer)
   }, [])
 
-  // Function to deduplicate polls based on messageId to fix the multiple polls issue
+  // Function to handle poll initialization and cleanup
   useEffect(() => {
-    // This runs once when the component mounts
-    // It helps consolidate any duplicate polls with the same messageId
-    if (messageId) {
-      const pollMessageMap = JSON.parse(localStorage.getItem('pollMessageIdMap') || '{}');
-      const canonicalPollId = Object.entries(pollMessageMap)
-        .find(([_pollId, msgId]) => msgId === messageId)?.[0];
-      
-      if (canonicalPollId && canonicalPollId !== pollId) {
-        console.log(`⚠️ Duplicate poll detected! ${pollId} will be redirected to ${canonicalPollId}`)
-        // Mark this poll as a duplicate and map it to the canonical one
-        const dedupeMap = JSON.parse(localStorage.getItem('pollIdDeduplicationMap') || '{}');
-        dedupeMap[pollId] = canonicalPollId;
-        localStorage.setItem('pollIdDeduplicationMap', JSON.stringify(dedupeMap));
-      } else if (!canonicalPollId) {
-        // This is the first poll with this messageId, register it as canonical
-        pollMessageMap[pollId] = messageId;
-        localStorage.setItem('pollMessageIdMap', JSON.stringify(pollMessageMap));
-        console.log(`📝 Registered canonical poll: ${pollId} for messageId ${messageId}`)
-      }
-    }
+    // CRITICAL: Always reset voting state whenever a poll is mounted or remounted
+    // This ensures fresh state for BAML-generated polls
+    setAllOperativesVoted(false);
+    setVotingInProgress(true);
     
-    // IMPORTANT: When a MetaPoll is created, signal that voting is in progress
-    // This will be used to disable discussion during voting
+    // Force the parent component to recognize voting is in progress
     if (onVotingStatusChange) {
+      console.log(`🔒 MetaPoll ${pollId} - HALTING game progress until voting completes`);
       onVotingStatusChange(true);
     }
     
-    // When component unmounts, signal that voting is no longer in progress
+    // CRITICAL FIX: Register this poll in the active polls list to prevent it from disappearing
+    // from the discussion history when new polls are created
+    try {
+      const activePollsList = JSON.parse(localStorage.getItem('activePollsList') || '[]');
+      
+      // Only add if not already in the list
+      if (!activePollsList.includes(pollId)) {
+        activePollsList.push(pollId);
+        localStorage.setItem('activePollsList', JSON.stringify(activePollsList));
+        console.log(`📋 Added poll ${pollId} to active polls list (${activePollsList.length} active polls)`);
+      }
+      
+      // This runs once when the component mounts
+      // It helps consolidate any duplicate polls with the same messageId
+      if (messageId) {
+        // We preserve the messageId mapping for cross-referencing but don't clear individual poll data
+        // This ensures each poll starts fresh while preserving its own history
+        const pollMessageMap = JSON.parse(localStorage.getItem('pollMessageIdMap') || '{}');
+        
+        // Register this poll ID with its message ID for reference
+        pollMessageMap[pollId] = messageId; // Always update, even if exists
+        localStorage.setItem('pollMessageIdMap', JSON.stringify(pollMessageMap));
+        console.log(`📝 Registered poll: ${pollId} for messageId ${messageId}`);
+      }
+    } catch (e) {
+      console.error("Error managing active polls list:", e);
+    }
+    
+    // When component unmounts, DON'T remove from active polls list to preserve in chat history
+    // but DO signal that voting is no longer in progress
     return () => {
       if (onVotingStatusChange) {
         onVotingStatusChange(false);
@@ -128,7 +163,10 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
   useEffect(() => {
     const fetchVotes = async () => {
       try {
-        const res = await fetch(`/api/games/${gameId}`)
+        // Add a cache-busting parameter to ensure we always get fresh data
+        // This prevents browsers from caching the API response
+        const cacheBuster = Date.now();
+        const res = await fetch(`/api/games/${gameId}?_=${cacheBuster}`)
         if (!res.ok) return
 
         const game = await res.json()
@@ -195,6 +233,7 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
           console.log(`📊 Vote check: poll=${v.pollId} vs ${pollId}, msg=${v.messageId} vs ${messageId}, confidence=${v.confidence}`)
           
           // CRITICAL FIX: Be more permissive in vote matching to ensure they display properly
+          // First check for exact pollId match (most reliable)
           // First check for exact pollId match (most reliable)
           if (v.pollId === pollId || v.pollId === effectivePollId) {
             console.log(`✅ Poll ID exact match: ${v.pollId}`)
@@ -323,13 +362,38 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
         const allVoted = humanVoteCount >= operativeCount;
         setAllOperativesVoted(allVoted);
         
-        // If all operatives have voted, signal to disable voting after a delay
+        // CRITICAL: If all operatives have voted, signal that voting has concluded AFTER a delay
+        // This ensures discussion/guessing remains halted until voting is definitely complete
         if (allVoted && onVotingStatusChange) {
-          // After a short delay, signal that voting has concluded
-          setTimeout(() => {
-            setInternalVotingInProgress(false);
+          // Keep votingInProgress true until after the delay completes
+          // This ensures the UI correctly shows voting as in progress until fully complete
+          if (votingTimeoutRef.current) {
+            clearTimeout(votingTimeoutRef.current); // Clear any existing timeout
+          }
+          
+          // CRITICALLY IMPORTANT: Set a global flag to ensure the entire game knows voting is still in progress
+          // This prevents any premature continuation of the game
+          localStorage.setItem('votingInProgress', 'true');
+          
+          votingTimeoutRef.current = setTimeout(() => {
+            // First update our component state
+            setVotingInProgress(false);
+            
+            // Then notify the parent component
             onVotingStatusChange(false);
-          }, 2000); // Give people time to see the final result
+            
+            // Finally, release the global lock
+            localStorage.removeItem('votingInProgress');
+            console.log(`🔓 Voting complete for poll ${pollId} - releasing game progress lock`);
+            
+            // Store completion status for this specific poll
+            localStorage.setItem(`poll_completed_${pollId}`, 'true');
+          }, 3000); // Longer delay for even more reliable state transition across components
+        }
+        
+        // Save votes to localStorage to ensure persistence between rerenders
+        if (pollId) {
+          localStorage.setItem(`poll_votes_${pollId}`, JSON.stringify(newVotes))
         }
         
         setVotes(newVotes)
@@ -346,16 +410,6 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
   }, [pollId, team, gameId, messageId, teamOperativeCount, onVotingStatusChange])
 
   const handleVote = async (action: VoteAction) => {
-    // Don't allow voting if voting is in progress from parent component
-    if (votingInProgress) {
-      console.log(`⚠️ Cannot vote while voting is in progress`);
-      setVotes(prev => ({
-        ...prev,
-        error: "Voting is currently in progress. Please wait..."
-      }));
-      return;
-    }
-    
     if (onVote) {
       onVote(action, team, messageId)
       return
@@ -364,7 +418,7 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
     // Rate limiting: prevent multiple votes in quick succession
     const lastVoteTime = parseInt(localStorage.getItem(`lastMetaVoteTime-${team}`) || '0')
     const now = Date.now()
-    const VOTE_COOLDOWN = 3000 // 3 seconds between votes
+    const VOTE_COOLDOWN = 1000 // 3 seconds between votes
     
     if (now - lastVoteTime < VOTE_COOLDOWN) {
       console.log(`⚠️ Vote throttled - please wait before voting again`)
@@ -394,16 +448,23 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
     // Use this ID to prevent double voting
     const uniqueId = `operative-${operativeUniqueId}`
     
+    // Simple but effective duplicate voting prevention - use poll ID as the primary key
+    const operativeVoteKey = `voted-${team}-${pollId}-${operativeUniqueId}`;
+    
     // Check if this operative already voted on this poll
-    const operativeVoteKey = `voted-${team}-${pollId}-${operativeUniqueId}`
     if (localStorage.getItem(operativeVoteKey)) {
-      console.log(`⛔ Operative ${operativeUniqueId} already voted on this poll`)
+      console.log(`⛔ Operative ${operativeUniqueId} already voted on this poll: ${pollId}`);
       setVotes(prev => ({
         ...prev,
         error: "You have already voted on this decision"
-      }))
-      return
+      }));
+      return;
     }
+    
+    // Also mark the global meta key for backward compatibility
+    localStorage.setItem(`voted-meta-${pollId}`, 'true');
+    
+    // Store vote record to prevent duplicates - do this AFTER successful API call
     
     // CRITICAL FIX: Use the original poll ID exactly as provided
     // This ensures votes belong to the correct poll and prevents poll unification
@@ -440,25 +501,47 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
     
     try {
       console.log(`🗳️ Submitting meta vote with pollId=${effectivePollId}, messageId=${messageId}`)
-      await fetch(`/api/games/${gameId}/meta/vote`, {
+      
+      // Construct a minimal, clean payload with only the required fields
+      const votePayload = {
+        model: `human#${uniqueId}`,
+        team,
+        action,
+        pollId: effectivePollId,
+        confidence: 1.0, // Add confidence value to ensure server validation passes
+        reasoning: `Human player voted to ${
+          action === "continue" ? "continue guessing because they think there are more words to find" : 
+          action === "end_turn" ? "end the turn because they think it's too risky to continue" : 
+          "discuss more before deciding"
+        }`
+      };
+      
+      // Only add messageId if it exists to avoid undefined values
+      if (messageId) {
+        votePayload.messageId = messageId;
+      }
+      
+      // Send the API request
+      const response = await fetch(`/api/games/${gameId}/meta/vote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: `human#${uniqueId}`,
-          team,
-          action,
-          pollId: effectivePollId, // Use original poll ID to ensure votes are counted together
-          messageId, // CRITICAL: Include messageId for proper poll association
-          reasoning: `Human player voted to ${
-            action === "continue" ? "continue guessing because they think there are more words to find" : 
-            action === "end_turn" ? "end the turn because they think it's too risky to continue" : 
-            "discuss more before deciding"
-          }`,
-        }),
+        body: JSON.stringify(votePayload),
       })
       
-      // Mark this operative as having voted on this poll
-      localStorage.setItem(`voted-${team}-${pollId}-${operativeUniqueId}`, 'true')
+      // Only mark the vote if API call was successful
+      if (response.ok) {
+        // Mark this operative as having voted on this poll
+        localStorage.setItem(`voted-${team}-${pollId}-${operativeUniqueId}`, 'true');
+        // Also mark the global meta key
+        localStorage.setItem(`voted-meta-${pollId}`, 'true');
+      } else {
+        // API error - show an error message
+        console.error(`❌ Vote API error: ${response.status} ${response.statusText}`);
+        setVotes(prev => ({
+          ...prev,
+          error: "Error submitting vote. Please try again."
+        }));
+      }
 
       // Immediately update the UI for a better user experience
       setVotes((prev) => {
@@ -522,27 +605,27 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
   // Determine if the vote is unanimous (all operatives voted the same way)
   const isUnanimous = (continuePercentage === 100 || endTurnPercentage === 100) && totalVotes >= operativesCount
   
-  // If all operatives have voted and the vote is decisive (80%+ in one direction), simplify the UI
-  const shouldShowSimplifiedUI = (totalVotes >= operativesCount) && 
-    (continuePercentage >= 80 || endTurnPercentage >= 80)
+  // We no longer show a simplified UI message - always show the poll results
+  // This ensures players can always see the voting results
+  const shouldShowSimplifiedUI = false
     
-  // CRITICAL FIX: Handle turn ending when team votes to end turn
+  // Handle turn ending when team votes to end turn, with improved state management
   useEffect(() => {
-    // Only execute if we have sufficient votes and a winning action
-    if (totalVotes >= operativesCount && winningAction && shouldShowSimplifiedUI) {
+    // Execute when we have sufficient votes and a winning action, regardless of UI state
+    if (totalVotes >= operativesCount && winningAction) {
       console.log(`🔄 Meta poll completed with decision: ${winningAction}`)
       
       // If vote is to end turn, notify parent component to handle turn change
       if (winningAction === "end_turn") {
         console.log(`🛑 Team voted to END TURN - initiating turn change`)
         
-        // Notify game component that voting is complete and turn should end
+        // Notify game component that voting is complete 
         if (onVotingStatusChange) {
           onVotingStatusChange(false)
-          setInternalVotingInProgress(false)
+          setVotingInProgress(false)
         }
         
-        // Explicit API call to end the turn
+        // Make explicit API call to end the turn AND signal for next team's spymaster to give clue
         try {
           fetch(`/api/games/${gameId}/meta/turn`, {
             method: "POST",
@@ -550,23 +633,28 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
             body: JSON.stringify({
               action: "end_turn",
               team,
-              pollId
+              pollId,
+              nextAction: "request_clue" // Signal that the next action should be to request a clue
             })
           })
           
-          // Also make an explicit call to the onVote handler
+          // Call the onVote handler
           if (onVote) {
             onVote("end_turn", team, messageId)
           }
           
-          // Force an explicit turn change in the local storage state
-          // so that the game component will immediately see and act on it
+          // Store turn change info in localStorage with nextAction flag to ensure spymaster gives clue
           localStorage.setItem(`meta-result-${pollId}`, JSON.stringify({
             action: "end_turn",
             team,
             timestamp: Date.now(),
-            complete: true
+            complete: true,
+            nextAction: "request_clue"
           }))
+          
+          // IMPORTANT: Set a global game state marker to trigger spymaster clue on next team's turn
+          localStorage.setItem(`game-${gameId}-next-action`, "request_clue")
+          localStorage.setItem(`game-${gameId}-clue-requested`, Date.now().toString())
           
         } catch (err) {
           console.error("Error ending turn after meta vote:", err)
@@ -576,7 +664,7 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
         console.log(`✅ Team voted to CONTINUE guessing`)
         if (onVotingStatusChange) {
           onVotingStatusChange(false)
-          setInternalVotingInProgress(false)
+          setVotingInProgress(false)
         }
         
         // Also make an explicit call to the onVote handler
@@ -593,7 +681,7 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
         }))
       }
     }
-  }, [totalVotes, operativesCount, winningAction, shouldShowSimplifiedUI, gameId, team, pollId, onVotingStatusChange, onVote, messageId])
+  }, [totalVotes, operativesCount, winningAction, gameId, team, pollId, onVotingStatusChange, onVote, messageId])
 
   return (
     <motion.div
@@ -641,25 +729,7 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
           {votes.error}
         </div>
       )}
-      {/* When vote is unanimous or decisive, show a simplified message */}
-      {shouldShowSimplifiedUI ? (
-        <div
-          style={{
-            padding: "15px",
-            backgroundColor: winningAction === "continue" ? "rgba(209, 250, 229, 0.8)" : "rgba(254, 226, 226, 0.8)",
-            color: winningAction === "continue" ? "#047857" : "#b91c1c",
-            borderRadius: "8px",
-            textAlign: "center",
-            fontWeight: "bold",
-            fontSize: "1.1em",
-            marginBottom: "12px",
-            border: `1px solid ${winningAction === "continue" ? "rgba(34, 197, 94, 0.3)" : "rgba(220, 38, 38, 0.3)"}`
-          }}
-        >
-          Team has decided to {winningAction === "continue" ? "CONTINUE GUESSING" : "END TURN"}
-        </div>
-      ) : (
-        <>
+      {/* Always show the poll UI - don't hide it with a simplified message */}
         {/* Continue Option */}
         <div
           onClick={() => !allOperativesVoted && handleVote("continue")}
@@ -737,7 +807,7 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
                         border: "1px solid #ddd",
                       }}
                     >
-                      {voter.player.split("#")[1].substring(0, 3)}
+                      {voter.player.split("#")[1].substring(0, 5)}
                     </span>
                   )}
                 </div>
@@ -860,7 +930,7 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
                         border: "1px solid #ddd",
                       }}
                     >
-                      {voter.player.split("#")[1].substring(0, 3)}
+                      {voter.player.split("#")[1].substring(0, 5)}
                     </span>
                   )}
                 </div>
@@ -906,8 +976,6 @@ export function MetaPoll({ pollId, team, gameId, timestamp, messageId, onVote, o
           </span>
         )}
       </div>
-      </>
-      )}
 
       {/* Progress Bar - more transparent */}
       <div

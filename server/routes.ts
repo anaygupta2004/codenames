@@ -9,8 +9,15 @@ import {
   makeAgentDecision,
   getMetaDecision,
   formatDiscussionMessage,
-  updateTeamMemory 
+  updateTeamMemory,
+  backgroundSpymasterThinking,
+  debouncedBackgroundThinking
 } from "./lib/ai-service";
+import {
+  startSpymasterBackgroundThinking,
+  stopSpymasterBackgroundThinking,
+  restartAllSpymasterThinking
+} from "./lib/spymaster-enhancement";
 import { updateTurnResults } from "./lib/game-memory";
 import { insertGameSchema } from "@shared/schema";
 import type { Game, GameState, TeamDiscussionEntry, ConsensusVote, GameHistoryEntry } from "@shared/schema";
@@ -245,6 +252,12 @@ function initializeGameRoom(gameId: number) {
       },
       lastSpymasterClue: new Map(),
       aiDiscussionInProgress: false
+    });
+    
+    // Start background thinking for both spymasters when a new game room is created
+    // This helps spymasters prepare better clues by thinking continuously
+    restartAllSpymasterThinking(gameId).catch(err => {
+      console.error(`Error starting spymaster background thinking for game ${gameId}:`, err);
     });
   }
   return gameDiscussions.get(gameId)!;
@@ -892,6 +905,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // Also delete using the base model name for backward compatibility
             gameRoom.teamModels[conn.team as "red" | "blue"].delete(conn.player as AIModel);
           }
+          
+          // Check if this game room is now empty and clean up resources if so
+          if (gameRoom.clients.size === 0) {
+            console.log(`🛑 All clients disconnected from game ${conn.gameId} - stopping background thinking processes`);
+            stopSpymasterBackgroundThinking(conn.gameId);
+          }
         }
         connections.delete(ws);
       }
@@ -939,7 +958,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Make sure we have revealed cards info
       const revealedCards = game.revealedCards || [];
+      
+      console.log(`🧠 Getting spymaster clue for ${currentSpymaster} (team: ${isRedTurn ? "red" : "blue"})`);
 
+      // Leverage our background thinking cache by default
+      // This will automatically use a cached clue if one is available and still relevant
       const clue = await getSpymasterClue(
         currentSpymaster as AIModel,
         game.words,
@@ -950,8 +973,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         game.gameState,
         game.redScore,
         game.blueScore,
-        revealedCards
+        revealedCards,
+        true // Use background thinking cache if available
       );
+      
+      console.log(`🎯 Spymaster ${currentSpymaster} provided clue: ${clue.word} (${clue.number})${clue.reasoning ? ' with reasoning' : ''}`);
+      
 
       // Store the clue and trigger AI discussion
       const gameRoom = gameDiscussions.get(game.id);
@@ -967,6 +994,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           player: currentSpymaster,
           timestamp: Date.now()
         };
+        
+        // Start background thinking for the opposing team's spymaster
+        // This helps the opponent prepare a clue while the current team is playing
+        const opposingTeam = isRedTurn ? "blue" : "red";
+        startSpymasterBackgroundThinking(game.id, opposingTeam, false).catch(err => {
+          console.error(`Error starting background thinking for opposing team ${opposingTeam}:`, err);
+        });
 
         gameRoom.clients.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
@@ -1236,6 +1270,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Always reset turn timer for the next team
         updates.currentTurnStartTime = new Date();
         
+        // When turn changes, trigger background thinking for both teams
+        // This is especially important for the team that's about to play
+        const incomingTeam = req.body.currentTurn === "red_turn" ? "red" : "blue";
+        const outgoingTeam = req.body.currentTurn === "red_turn" ? "blue" : "red";
+        
+        // Prioritize thinking for the team that's about to play
+        startSpymasterBackgroundThinking(game.id, incomingTeam, false).catch(err => {
+          console.error(`Error starting background thinking for incoming team ${incomingTeam}:`, err);
+        });
+        
+        // Also let the other team think about their next move
+        startSpymasterBackgroundThinking(game.id, outgoingTeam, true).catch(err => {
+          console.error(`Error starting background thinking for outgoing team ${outgoingTeam}:`, err);
+        });
+        
         // Add history entry for forced timer changes
         if (hasTimerExpiration) {
           console.log(`⏰ TIMER EXPIRATION TURN CHANGE via PATCH`);
@@ -1450,23 +1499,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Format the model ID with the unique identifier
       const modelWithId = modelUniqueId ? `${baseModel}#${finalUniqueId}` : baseModel;
       
-      // Check if this exact unique ID has already voted for this word
-      const hasExactDuplicate = (game.consensusVotes || []).some(v => 
+      // Check if this model (without unique ID) has already voted for this word
+      // We'll replace the vote with the higher confidence instead of rejecting it
+      const existingVoteIndex = (game.consensusVotes || []).findIndex(v => 
         v.team === team && 
         v.word === word && 
-        (v.player === modelWithId || 
-         (typeof v.player === 'string' && v.player.includes('#') && v.player.split('#')[1] === finalUniqueId))
+        (v.player === model || 
+         (typeof v.player === 'string' && 
+          v.player.split('#')[0] === model))
       );
       
-      if (hasExactDuplicate) {
-        console.log(`⚠️ Rejecting duplicate vote: ${modelWithId} has already voted for word ${word}`);
-        return res.status(400).json({ 
-          error: "This player has already voted for this word",
-          alreadyVoted: true
-        });
-      }
+      const existingVote = existingVoteIndex !== -1 ? (game.consensusVotes || [])[existingVoteIndex] : null;
       
       console.log(`✅ Using model ID for vote: ${modelWithId} (unique ID: ${finalUniqueId})`);
+      if (existingVote) {
+        console.log(`🔄 Model ${model} already voted for word ${word}, will update with max confidence`);
+      }
       
 
       const clueContent = game.gameHistory?.filter(h => h.type === "clue")?.pop()?.content || "";
@@ -1493,14 +1541,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create the new vote object with the uniquified model ID
       let newVote: ConsensusVote;
       
+      // Calculate adjusted confidence based on past guesses related to this clue
+      const adjustConfidenceBasedOnPastGuesses = (baseConfidence: number) => {
+        // Get all historical guesses
+        const allGuesses = (game.gameHistory || []).filter(h => h.type === "guess");
+        
+        // Find any words previously guessed with this clue that were wrong
+        const wrongGuessesForClue = allGuesses.filter(g => 
+          g.relatedClue === clueContent && 
+          g.result === "wrong");
+          
+        // If there are wrong guesses for this clue, this word is more likely to be right
+        // (assuming spymaster intended it for this word instead)
+        let confidenceMultiplier = 1.0;
+        
+        if (wrongGuessesForClue.length > 0) {
+          // Each wrong guess increases confidence for remaining words
+          confidenceMultiplier += wrongGuessesForClue.length * 0.15;
+          
+          console.log(`🔍 Found ${wrongGuessesForClue.length} wrong guesses for clue "${clueContent}", ` +
+                    `adjusting confidence by multiplier ${confidenceMultiplier.toFixed(2)}`);
+        }
+
+        // Calculate adjusted confidence, capped at 0.99
+        return Math.min(0.99, baseConfidence * confidenceMultiplier);
+      };
+      
       if (model === 'human') {
         // For human votes, create a direct vote without AI decisions
+        const humanConfidence = 0.9;
+        const adjustedConfidence = adjustConfidenceBasedOnPastGuesses(humanConfidence);
+        
         newVote = {
           team,
           player: modelWithId, // Use uniquified model ID
           word,
           approved: true, // Humans vote to approve by default
-          confidence: 0.9,
+          confidence: adjustedConfidence,
           timestamp: Date.now(),
           reason: "Human player voted",
           relatedClue: clueContent, // Store the current clue for traceability
@@ -1524,12 +1601,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           currentClueGuessCount
         );
         
+        // Adjust confidence based on past guesses with this clue
+        const adjustedConfidence = adjustConfidenceBasedOnPastGuesses(vote.confidence);
+        
         newVote = {
           team,
           player: modelWithId, // Use uniquified model ID
           word,
           approved: vote.decision === "guess",
-          confidence: vote.confidence,
+          confidence: adjustedConfidence,
           timestamp: Date.now(),
           reason: vote.explanation,
           relatedClue: clueContent, // Store the current clue for traceability
@@ -1542,10 +1622,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       }
 
-      // Add the vote to the consensus votes
-      const updatedVotes = game.consensusVotes 
-        ? [...game.consensusVotes, newVote]
-        : [newVote];
+      // Add the vote to the consensus votes or update existing vote with max confidence
+      let updatedVotes;
+      if (existingVote) {
+        // Take the max confidence between old and new vote
+        const maxConfidence = Math.max(existingVote.confidence || 0, newVote.confidence || 0);
+        
+        // Create updated vote object with max confidence
+        const updatedVote = {
+          ...newVote,
+          confidence: maxConfidence,
+          // Store original timestamp to track the first time voted
+          originalTimestamp: existingVote.originalTimestamp || existingVote.timestamp
+        };
+        
+        // Replace existing vote
+        updatedVotes = [...(game.consensusVotes || [])];
+        updatedVotes[existingVoteIndex] = updatedVote;
+        
+        console.log(`📊 Updated vote confidence for ${model} on word ${word} to ${maxConfidence}`);
+      } else {
+        // Add as a new vote with originalTimestamp
+        const voteWithOriginalTimestamp = {
+          ...newVote,
+          originalTimestamp: Date.now() // Track when first voted
+        };
+        updatedVotes = game.consensusVotes 
+          ? [...game.consensusVotes, voteWithOriginalTimestamp]
+          : [voteWithOriginalTimestamp];
+      }
 
       await storage.updateGame(game.id, {
         consensusVotes: updatedVotes
@@ -1613,11 +1718,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // Get client connection info to check team
             const connInfo = connections.get(client);
             
-            // Get the appropriate icon for each voter
-            const voterIconInfo = teamVotes.map(v => {
-              // Extract base model name from any format
+            // Get the appropriate icon for each voter - ensuring max one icon per model
+            // First deduplicate votes by model (keeping highest confidence vote per model)
+            const modelVotes = new Map();
+            teamVotes.forEach(v => {
+              // Extract base model name without unique ID
               let baseModel = v.player;
-              
               if (typeof baseModel === 'string') {
                 if (baseModel.includes('#')) {
                   baseModel = baseModel.split('#')[0];
@@ -1630,6 +1736,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 }
               }
               
+              // If we already have a vote for this model, keep only the highest confidence one
+              if (!modelVotes.has(baseModel) || v.confidence > modelVotes.get(baseModel).confidence) {
+                modelVotes.set(baseModel, {
+                  player: v.player,
+                  baseModel,
+                  confidence: v.confidence,
+                  timestamp: v.timestamp
+                });
+              }
+            });
+            
+            // Convert map back to array for display
+            const voterIconInfo = Array.from(modelVotes.values()).map(v => {
               // Complete map of models to visual icons
               const iconMap: {[key: string]: string} = {
                 // AI Models
@@ -1649,6 +1768,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               // Return player info with icon
               return { 
                 player: v.player, 
+                baseModel: v.baseModel,
                 confidence: v.confidence,
                 icon: iconMap[baseModel] || '🤖'
               };
@@ -2133,7 +2253,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Check if this model/player is on the team they're trying to vote for
       const isTeamMember = teamPlayers?.includes(baseModel);
       if (!isTeamMember) {
-        console.log(`⛔ Blocking vote from ${model} - not a member of ${team} team`);
+        //console.log(`⛔ Blocking vote from ${model} - not a member of ${team} team`);
         return res.status(403).json({ 
           success: false, 
           message: `You cannot vote on ${team} team's decisions because you are not on that team`,
