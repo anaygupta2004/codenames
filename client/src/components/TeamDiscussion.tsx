@@ -60,11 +60,12 @@ interface TeamDiscussionProps {
   messages: ExtendedTeamDiscussionEntry[];
   gameId?: number;
   team?: string;
-  onVote?: (word: string, team: string) => void;
+  onVote?: (word: string, team: string, messageId?: string) => void; // Updated to include messageId for voting status changes
   votingInProgress?: boolean; // Add prop to indicate if voting is active
+  onVotingStatusChange?: (isVoting: boolean) => void; // Add prop to handle voting status changes
 }
 
-export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgress = false }: TeamDiscussionProps) {
+export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgress = false, onVotingStatusChange }: TeamDiscussionProps) {
   // State for turn navigation
   const [currentTurn, setCurrentTurn] = useState<number | null>(null);
   const [maxTurn, setMaxTurn] = useState<number>(0);
@@ -565,6 +566,42 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
             }
             return prev;
           });
+          
+          // Add a notification message about score changes if provided
+          if (data.message && team) {
+            // Get reference to sound effect for score updates
+            const scoreSound = new Audio('/notification.mp3');
+            
+            // Create a notification message with score info
+            let scoreMessage = data.message;
+            
+            // Check if there are score updates to highlight
+            if (data.scoreUpdates) {
+              const redUpdate = data.scoreUpdates.redScore !== undefined;
+              const blueUpdate = data.scoreUpdates.blueScore !== undefined;
+              
+              if (redUpdate || blueUpdate) {
+                // Play notification sound
+                scoreSound.volume = 0.3;
+                try {
+                  scoreSound.play().catch(e => console.log("Error playing sound:", e));
+                } catch (e) {
+                  console.error("Failed to play notification sound:", e);
+                }
+              }
+            }
+            
+            // Add the message to team discussion with proper formatting
+            fetch(`/api/games/${gameId}/meta/discuss`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                message: scoreMessage,
+                team,
+                triggerVoting: false
+              })
+            }).catch(err => console.error("Error sending score message:", err));
+          }
           
           // Completely remove the guessed word from votes and UI
           setWordVotes(prev => {
@@ -2019,6 +2056,24 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
                     // This improves poll association in the server responses
                     console.log(`🎮 MetaPoll vote handler: action=${action}, team=${team}, msgId=${msgId || 'none'}, pollId=${msg.pollId || 'none'}`);
                     handleMetaVote(action, team, msg.pollId || msgId);
+                  }}
+                  onVotingStatusChange={(isVoting) => {
+                    // Ensure the parent component knows about voting status
+                    console.log(`🔒 MetaPoll ${msg.pollId || getMessageId(msg)} voting status: ${isVoting ? 'in progress' : 'complete'}`);
+                    // Pass voting status up through the component hierarchy
+                    if (onVotingStatusChange) {
+                      onVotingStatusChange(isVoting);
+                    } else if (onVote) {
+                      // Use onVote as fallback if available
+                      onVote('voting_status_change', team, isVoting ? 'true' : 'false');
+                    }
+                    
+                    // Store global voting status in localStorage for cross-component sync
+                    if (isVoting) {
+                      localStorage.setItem('votingInProgress', 'true');
+                    } else {
+                      localStorage.removeItem('votingInProgress');
+                    }
                   }}
                   key={`meta-poll-${getMessageId(msg)}-${Date.now()}`} // Add unique timestamp to force component remount
                 />
