@@ -434,17 +434,26 @@ export default function GamePage() {
             // Also update React Query cache
             queryClient.setQueryData([`/api/games/${id}`], (oldData: Game | undefined) => {
               if (!oldData) return oldData;
+              
+              // Add the revealed card
+              const updatedRevealedCards = [...(oldData.revealedCards || [])];
+              if (!updatedRevealedCards.includes(data.word)) {
+                updatedRevealedCards.push(data.word);
+              }
+              
               return {
                 ...oldData,
                 teamDiscussion: [...(oldData.teamDiscussion || []), newEntry]
               };
             });
-            
-            // Trigger a refetch to sync with server
+
+            // Force immediate game data refresh
             queryClient.invalidateQueries({ 
-              queryKey: [`/api/games/${id}`]
+              queryKey: [`/api/games/${id}`],
+              refetchType: 'active',
+              exact: true
             });
-            
+
             // If the message has suggested words with high confidence, track them for potential voting
             if (newEntry.suggestedWords?.length > 0 && newEntry.confidences?.[0] >= 0.6) {
               newEntry.suggestedWords.forEach((word: string, index: number) => {
@@ -1120,6 +1129,7 @@ export default function GamePage() {
       // First, reveal the card
       const res = await apiRequest("PATCH", `/api/games/${id}`, {
         revealedCards: [...(game?.revealedCards || []), word],
+        guessingTeam: game.currentTurn === "red_turn" ? "red" : "blue"
       });
 
       const data = await res.json();
@@ -1145,11 +1155,9 @@ export default function GamePage() {
       
       // Create a discussion message about the guess to ensure it appears in chat
       const guessMessage = {
-        type: 'discussion',
-        content: `Guessed: ${word} (${result})`,
-        message: `Guessed: ${word} (${result})`,
         team: currentTeam,
         player: 'Game',
+        message: `Guessed: ${word} (${result})`,
         timestamp: Date.now()
       };
       
@@ -1157,6 +1165,7 @@ export default function GamePage() {
       if (socketRef.current?.readyState === WebSocket.OPEN) {
         socketRef.current.send(JSON.stringify({
           ...guessMessage,
+          type: 'discussion',
           gameId: Number(id)
         }));
       }
@@ -1184,43 +1193,38 @@ export default function GamePage() {
       }
       
       // ALWAYS create a meta-vote decision after EVERY correct guess
-      if (result === "correct") {
+       if (result === "correct") {
         console.log("✅ CORRECT GUESS - INITIATING META DECISION FLOW");
         
-        // Check if there's already an active metapoll for this team
-        const existingMetaPollKey = `active-metapoll-${currentTeam}`;
-        const existingMetaPoll = localStorage.getItem(existingMetaPollKey);
+        // Force refresh game data to ensure score UI updates immediately
+        await queryClient.invalidateQueries({ 
+          queryKey: [`/api/games/${id}`],
+          refetchType: 'all'
+        });
+        
+        // CRITICAL: Reset all voting state to ensure a fresh poll after every correct guess
+        setVotingInProgress(true); // Immediately block further guessing
+        setDisplayedPolls(new Set()); // Clear any displayed polls
+        
+        // Clear any previous poll data from localStorage to ensure completely fresh polls
+        Object.keys(localStorage)
+          .filter(key => 
+            key.startsWith('poll_votes_') || 
+            key.startsWith('voted-meta-') || 
+            key.startsWith(`voted-${currentTeam}-`) ||
+            key === 'votingInProgress' ||
+            key.startsWith('active-metapoll-')
+          )
+          .forEach(key => localStorage.removeItem(key));
+        
+        // Always force a new meta poll after every correct guess
         const now = Date.now();
+        let metaPollId = `meta-${currentTeam}-${now}-decision`;
         
-        // Only create a new metapoll if there isn't an active one or if the previous one is older than 30 seconds
-        let shouldCreateNewMetaPoll = true;
-        let metaPollId;
-        
-        if (existingMetaPoll) {
-          const [savedPollId, savedTimestamp] = existingMetaPoll.split('|');
-          const pollAge = now - parseInt(savedTimestamp);
-          
-          // If we have a recent poll (less than 30 seconds old), use it instead of creating a new one
-          if (pollAge < 30000) {
-            console.log(`⚠️ Using existing metapoll: ${savedPollId} (${pollAge}ms old)`);
-            metaPollId = savedPollId;
-            shouldCreateNewMetaPoll = false;
-          } else {
-            console.log(`🕒 Existing metapoll expired: ${savedPollId} (${pollAge}ms old)`);
-          }
-        }
-        
-        // Create a new metapoll ID if needed
-        if (shouldCreateNewMetaPoll) {
-          metaPollId = `meta-${currentTeam}-${now}-decision`;
-          // Save this as the active metapoll for this team
-          localStorage.setItem(existingMetaPollKey, `${metaPollId}|${now}`);
-          console.log(`🆕 Created new metapoll: ${metaPollId}`);
-        }
-        
-        // IMMEDIATELY set voting state to true for UI rendering
-        setIsVotingActive(true);
-        setVotingInProgress(true);
+        // Set this as the active metapoll for this team
+        const existingMetaPollKey = `active-metapoll-${currentTeam}`;
+        localStorage.setItem(existingMetaPollKey, `${metaPollId}|${now}`);
+        console.log(`🆕 Created new metapoll after correct guess: ${metaPollId}`);
         
         // Add a meta decision entry with explicit voting flags
         const metaDecisionMsg = {
@@ -1231,11 +1235,10 @@ export default function GamePage() {
           isVoting: true, // CRITICAL: Mark as voting message
           voteType: 'meta_decision',
           metaOptions: ['continue', 'end_turn'],
-          pollId: metaPollId, // CRITICAL: Add explicit poll ID for easy matching with votes
+          pollId: metaPollId, // CRITICAL: Add explicit poll ID for easy matching with votes 
           messageId: metaPollId // Also use same ID as messageId for redundancy
         };
         
-        // Add to local discussion IMMEDIATELY
         setLocalDiscussion(prev => [...prev, metaDecisionMsg]);
         
         // Send via WebSocket for real-time updates
@@ -1244,7 +1247,6 @@ export default function GamePage() {
             ...metaDecisionMsg,
             type: 'discussion',
             gameId: Number(id),
-            // Ensure poll ID and message ID are included in WebSocket message
             pollId: metaPollId,
             messageId: metaPollId
           }));
@@ -1258,18 +1260,15 @@ export default function GamePage() {
             message: "Should we continue guessing or end turn?",
             team: currentTeam,
             triggerVoting: true,
-            pollId: metaPollId, // Add explicit pollId for consistent vote grouping
-            messageId: metaPollId, // Also use same ID as messageId for redundancy
+            pollId: metaPollId,
+            messageId: metaPollId,
             isVoting: true,
             voteType: 'meta_decision'
           })
         }).catch(err => console.error("Error triggering AI meta vote:", err));
         
-        // Force refresh game data to ensure UI updates
-        queryClient.invalidateQueries({ 
-          queryKey: [`/api/games/${id}`],
-          refetchType: 'active'
-        });
+        // Always create a meta vote display in the UI for humans to vote
+        setIsVotingActive(true);
       }
       
       // CRITICAL FIX: Turn only changes when guessing wrong words (neutral/opponent/assassin)
@@ -1289,11 +1288,15 @@ export default function GamePage() {
         if (isOpponentTeamWord) {
           console.log(`📈 Opponent team (${isRedTurn ? 'blue' : 'red'}) gets a point for revealing their word`);
           
-          // Make an additional API call to ensure the score is updated properly
-          const opposingTeam = isRedTurn ? "blue" : "red";
-          apiRequest("PATCH", `/api/games/${id}`, {
-            [`${opposingTeam}Score`]: (game?.[`${opposingTeam}Score`] || 0) + 1
-          }).catch(err => console.error(`Failed to update ${opposingTeam} score:`, err));
+          // The score update for opponent's word is now handled consistently in handleGuess on the server side
+          // This ensures the opponent always gets points regardless of who made the guess and how
+          // We just need to ensure we refresh the UI to show the updated score
+          
+          // Force refresh game data to ensure score UI updates immediately
+          queryClient.invalidateQueries({ 
+            queryKey: [`/api/games/${id}`],
+            refetchType: 'all'
+          });
         }
         
         // Get the specific reason for turn change
@@ -3047,41 +3050,29 @@ export default function GamePage() {
         </div>
         <div className="flex-1">
           <div className={`font-medium ${isAI ? `text-${msgTeamColor}-700` : 'text-gray-800'} flex justify-between items-center`}>
-            <div className="flex items-center">
-              <div>
-                {isAI ? getModelDisplayName(entry.player as AIModel) : entry.player}
-                <span className="text-xs text-gray-500 ml-2">
-                  {entry.timestamp 
-                    ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
-                    : new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                  {!isCurrentTeam && (
-                    <span className={`ml-1 text-${msgTeamColor}-500 font-medium`}>({msgTeamColor === "red" ? "RED" : "BLUE"})</span>
-                  )}
-                </span>
-              </div>
-              
-              {/* Special badge for important messages - now inside the flex container */}
-              {(hasSuggestions || isVotingMsg) && (
-                <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${
-                  hasSuggestions ? "bg-amber-100 text-amber-800" : 
-                  isVotingMsg ? "bg-blue-100 text-blue-800" : ""
-                }`}>
-                  {hasSuggestions && entry.suggestedWords?.length ? `${entry.suggestedWords.length} word${entry.suggestedWords.length > 1 ? 's' : ''}` : ''}
-                  {hasSuggestions && isVotingMsg ? ' + ' : ''}
-                  {isVotingMsg ? 'vote' : ''}
-                </span>
-              )}
+            <div>
+              {isAI ? getModelDisplayName(entry.player as AIModel) : entry.player}
+              <span className="text-xs text-gray-500 ml-2">
+                {entry.timestamp 
+                  ? new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+                  : new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                {!isCurrentTeam && (
+                  <span className={`ml-1 text-${msgTeamColor}-500 font-medium`}>({msgTeamColor === "red" ? "RED" : "BLUE"})</span>
+                )}
+              </span>
             </div>
             
-            {/* Display unique model ID in top right for all messages */}
-            <span className="text-xs font-bold bg-gray-100 px-2 py-1 rounded-md text-gray-600">
-              {typeof entry.player === 'string' && entry.player.includes('#') 
-                ? `#${entry.player.split('#')[1].substring(0, 5)}` // Display model's unique ID
-                : `#${(() => {
-                  // Generate a stable ID for this message if no explicit ID
-                  return entry.timestamp.toString().substring(Math.max(0, entry.timestamp.toString().length - 5));
-                })()}`}
-            </span>
+            {/* Special badge for important messages - now inside the flex container */}
+            {(hasSuggestions || isVotingMsg) && (
+              <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${
+                hasSuggestions ? "bg-amber-100 text-amber-800" : 
+                isVotingMsg ? "bg-blue-100 text-blue-800" : ""
+              }`}>
+                {hasSuggestions && entry.suggestedWords?.length ? `${entry.suggestedWords.length} word${entry.suggestedWords.length > 1 ? 's' : ''}` : ''}
+                {hasSuggestions && isVotingMsg ? ' + ' : ''}
+                {isVotingMsg ? 'vote' : ''}
+              </span>
+            )}
           </div>
           
           {/* Message content with special styling for important messages */}

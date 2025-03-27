@@ -124,6 +124,7 @@ async function handleGuess(gameId: number, team: string, word: string): Promise<
     // Explicitly set the turn reason for detailed logs
     const isNeutralWord = !game.redTeam.includes(word) && !game.blueTeam.includes(word) && word !== game.assassin;
     const isOpponentWord = (team === "red" && game.blueTeam.includes(word)) || (team === "blue" && game.redTeam.includes(word));
+    
     updates.turnChangeReason = isNeutralWord ? "neutral_word" : (isOpponentWord ? "opponent_word" : "wrong_guess");
     
     // Reset the turn timer explicitly for the next team
@@ -1250,183 +1251,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/games/:id", async (req, res) => {
     try {
-      const game = await storage.getGame(Number(req.params.id));
-      if (!game) return res.status(404).json({ error: "Game not found" });
-
-      const updates: Partial<Game> = {};
-
-      // Check for forced turn changes from timer expiration
-      const hasTimerExpiration = req.body._forceTimerSwitch === true || 
-                               req.body.forceTimerExpiration === true ||
-                               req.body._EMERGENCY_TURN_CHANGE === true;
+      const gameId = Number(req.params.id);
+      const updates = req.body;
       
-      // Handle explicit turn changes with higher priority
-      if (req.body.currentTurn && (req.body.currentTurn !== game.currentTurn || hasTimerExpiration)) {
-        console.log(`🔄 TURN CHANGE via PATCH: ${game.currentTurn} → ${req.body.currentTurn}`);
+      // CRITICAL FIX: Check if this is a guess with guessingTeam parameter
+      // This enables the server to handle human guesses the same way as AI guesses
+      if (updates.revealedCards && updates.guessingTeam) {
+        const game = await storage.getGame(gameId);
+        if (!game) return res.status(404).json({ error: "Game not found" });
         
-        // Always update turn state in the database
-        updates.currentTurn = req.body.currentTurn;
+        // Find the new word that was revealed (compare with existing revealed cards)
+        const newWord = updates.revealedCards.find(word => 
+          !game.revealedCards.includes(word)
+        );
         
-        // Always reset turn timer for the next team
-        updates.currentTurnStartTime = new Date();
-        
-        // When turn changes, trigger background thinking for both teams
-        // This is especially important for the team that's about to play
-        const incomingTeam = req.body.currentTurn === "red_turn" ? "red" : "blue";
-        const outgoingTeam = req.body.currentTurn === "red_turn" ? "blue" : "red";
-        
-        // Prioritize thinking for the team that's about to play
-        startSpymasterBackgroundThinking(game.id, incomingTeam, false).catch(err => {
-          console.error(`Error starting background thinking for incoming team ${incomingTeam}:`, err);
-        });
-        
-        // Also let the other team think about their next move
-        startSpymasterBackgroundThinking(game.id, outgoingTeam, true).catch(err => {
-          console.error(`Error starting background thinking for outgoing team ${outgoingTeam}:`, err);
-        });
-        
-        // Add history entry for forced timer changes
-        if (hasTimerExpiration) {
-          console.log(`⏰ TIMER EXPIRATION TURN CHANGE via PATCH`);
-          const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
+        if (newWord) {
+          console.log(`🎮 Human guess detected: Team ${updates.guessingTeam} guessing word "${newWord}"`);
           
-          updates.gameHistory = [
-            ...(game.gameHistory || []),
-            {
-              type: "turn_end",
-              turn: currentTeam,
-              content: `${currentTeam.toUpperCase()} team's turn ended due to TIMER EXPIRATION (forced)`,
-              timestamp: Date.now(),
-              forced: true
-            }
-          ];
+          // Use the handleGuess function to process the guess consistently
+          // This ensures the same scoring logic is used for both human and AI guesses
+          const result = await handleGuess(gameId, updates.guessingTeam, newWord);
           
-          // Broadcast turn change to all clients
-          const gameRoom = gameDiscussions.get(game.id);
-          if (gameRoom) {
-            const nextTeam = currentTeam === "red" ? "blue" : "red";
-            gameRoom.clients.forEach(client => {
-              if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                  type: 'turn_change',
-                  from: currentTeam,
-                  to: nextTeam,
-                  reason: 'time_expired',
-                  timestamp: Date.now(),
-                  forced: true,
-                  highPriority: true,
-                  source: 'patch_api'
-                }));
-              }
-            });
-          }
+          // Return the updated game with proper result
+          const updatedGame = await storage.getGame(gameId);
+          return res.json({
+            ...updatedGame,
+            guessResult: result,
+            guessedWord: newWord
+          });
         }
       }
-
-      // When a new clue is given
-      if (req.body.clue) {
-        const gameRoom = gameDiscussions.get(game.id);
-        if (gameRoom) {
-          const team = game.currentTurn === "red_turn" ? "red" : "blue";
-          gameRoom.lastSpymasterClue.set(team, req.body.clue);
-
-          // ALWAYS reset turn timer when a clue is given
-          updates.currentTurnStartTime = new Date();
-
-          // Start AI discussion immediately after clue
-          const aiPlayers = team === 'red'
-            ? game.redPlayers.filter(p => p !== 'human' && p !== game.redSpymaster)
-            : game.bluePlayers.filter(p => p !== 'human' && p !== game.blueSpymaster);
-
-          if (aiPlayers.length > 0) {
-            handleAIDiscussion(game.id, aiPlayers, req.body.clue, team, true);
-          }
-        }
-      }
-
-      if (req.body.revealedCards) {
-        const newCard = req.body.revealedCards[req.body.revealedCards.length - 1];
-        const currentTeam = game.currentTurn === "red_turn" ? "red" : "blue";
-
-        let result: "correct" | "wrong" | "assassin";
-        if (newCard === game.assassin) {
-          result = "assassin";
-          updates.gameState = game.currentTurn === "red_turn" ? "blue_win" : "red_win";
-          updates.currentTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
-        } else if (
-          (game.currentTurn === "red_turn" && game.redTeam.includes(newCard)) ||
-          (game.currentTurn === "blue_turn" && game.blueTeam.includes(newCard))
-        ) {
-          result = "correct";
-          // Score always goes to the team that OWNS the word
-          if (game.redTeam.includes(newCard)) {
-            // Red team's word was revealed
-            updates.redScore = (game.redScore || 0) + 1;
-            console.log(`Red team gets a point because their word "${newCard}" was revealed`);
-          } else if (game.blueTeam.includes(newCard)) {
-            // Blue team's word was revealed
-            updates.blueScore = (game.blueScore || 0) + 1;
-            console.log(`Blue team gets a point because their word "${newCard}" was revealed`);
-          }
-          
-          // Only change turn if it was a wrong guess
-          // CRITICAL FIX: Only change turn for wrong guesses
-          if (
-            // Determine if this is a wrong guess (not team's own word)
-            (game.currentTurn === "red_turn" && !game.redTeam.includes(newCard)) ||
-            (game.currentTurn === "blue_turn" && !game.blueTeam.includes(newCard))
-          ) {
-            result = "wrong";
-            // Change turn for wrong guesses
-            updates.currentTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
-          } else {
-            // Correct guess - do NOT change turn (team continues)
-            result = "correct";
-          }
-        }
-
-        // Broadcast the guess result to all clients
-        wss.clients.forEach(client => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'guess',
-              team: currentTeam,
-              word: newCard,
-              result,
-              timestamp: Date.now()
-            }));
-          }
-        });
-
-        updates.revealedCards = req.body.revealedCards;
-
-        const historyEntry: GameHistoryEntry = {
-          type: "guess",
-          turn: currentTeam,
-          content: `Guessed: ${newCard}`,
-          timestamp: Date.now()
-        };
-
-        updates.gameHistory = game.gameHistory 
-          ? [...game.gameHistory, historyEntry]
-          : [historyEntry];
-
-        if (result === "wrong" || result === "assassin") {
-          updates.currentTurn = game.currentTurn === "red_turn" ? "blue_turn" : "red_turn";
-        }
-
-        if (game.redTeam.every((word: string) => req.body.revealedCards?.includes(word))) {
-          updates.gameState = "red_win";
-        } else if (game.blueTeam.every((word: string) => req.body.revealedCards?.includes(word))) {
-          updates.gameState = "blue_win";
-        }
-      }
-
-      const updatedGame = await storage.updateGame(game.id, updates);
+      
+      // For other updates, proceed normally
+      const updatedGame = await storage.updateGame(gameId, updates);
       res.json(updatedGame);
-    } catch (error: any) {
-      console.error("Error in patch game:", error);
-      res.status(500).json({ error: error.message });
+    } catch (error) {
+      console.error("Error updating game:", error);
+      res.status(500).json({ error: "Failed to update game" });
     }
   });
 
@@ -1652,7 +1513,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           : [voteWithOriginalTimestamp];
       }
 
-      await storage.updateGame(game.id, {
+      await storage.updateGame(gameId, {
         consensusVotes: updatedVotes
       });
 
@@ -1691,7 +1552,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const adjustedPercentage = voteCount > 0 ? Math.max(30, votePercentage) : 0;
       
       // Broadcast voting status to all clients
-      const gameRoom = gameDiscussions.get(game.id);
+      const gameRoom = gameDiscussions.get(gameId);
       if (gameRoom) {
         console.log(`📊 Word votes status for "${word}": ${voteCount}/${totalVoters} (${adjustedPercentage}%)`);
         
@@ -1705,7 +1566,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
         
         // Add discussion message to game
-        await storage.updateGame(game.id, {
+        await storage.updateGame(gameId, {
           teamDiscussion: [
             ...(game.teamDiscussion || []),
             discussionMessage
@@ -1889,7 +1750,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
-      if ((thresholdReached || forceGuess || hasHighConfidence) && team === (game.currentTurn === 'red_turn' ? 'red' : 'blue')) {
+      if ((thresholdReached || forceGuess || hasHighConfidence) && team === (game.currentTurn === "red_turn" ? "red" : "blue")) {
         console.log(`🎯 Consensus threshold reached for "${word}" with ${votePercentage}% of votes or ${highConfidenceVotes.length} high confidence votes. Processing guess.`);
         
         // If threshold is reached, process the guess
@@ -1925,11 +1786,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Calculate score updates
         let scoreUpdates: {redScore?: number, blueScore?: number} = {};
         
-        // Award points to the team that OWNS the word
+        // Award points based on which team's word was revealed
         if (game.redTeam.includes(word)) {
+          // Red team's word was revealed
           scoreUpdates.redScore = (game.redScore || 0) + 1;
+          
+          // Make the explanation clearer in the history entry
+          if (team === "blue") {
+            historyEntry.content = `${team.toUpperCase()} team guessed RED team's word: ${word} (Red gets a point)`;
+          }
         } else if (game.blueTeam.includes(word)) {
+          // Blue team's word was revealed
           scoreUpdates.blueScore = (game.blueScore || 0) + 1;
+          
+          // Make the explanation clearer in the history entry
+          if (team === "red") {
+            historyEntry.content = `${team.toUpperCase()} team guessed BLUE team's word: ${word} (Blue gets a point)`;
+          }
         }
         
         // Handle turn changes based on guess result
@@ -1969,7 +1842,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
         
         // Update game with all changes
-        await storage.updateGame(game.id, {
+        await storage.updateGame(gameId, {
           revealedCards: updatedRevealedCards,
           gameHistory: [
             ...(game.gameHistory || []),
@@ -1981,14 +1854,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         // Broadcast guess to all clients
         if (gameRoom) {
+          // Generate a more descriptive message based on result
+          let message = "";
+          if (result === "correct") {
+            message = `${team.toUpperCase()} team correctly guessed their own word: ${word}`;
+          } else if (result === "wrong") {
+            if ((team === "red" && game.blueTeam.includes(word)) || 
+                (team === "blue" && game.redTeam.includes(word))) {
+              // Opponent's word was guessed
+              const opposingTeam = team === "red" ? "BLUE" : "RED";
+              message = `${team.toUpperCase()} team guessed ${opposingTeam} team's word: ${word} (${opposingTeam} gets a point)`;
+            } else {
+              // Neutral word was guessed
+              message = `${team.toUpperCase()} team guessed neutral word: ${word}`;
+            }
+          } else if (result === "assassin") {
+            message = `${team.toUpperCase()} team guessed the ASSASSIN word: ${word}`;
+          }
+          
           gameRoom.clients.forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({
                 type: 'guess',
                 team,
+                word,
                 content: word,
+                message, // Add descriptive message
                 result,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                scoreUpdates // Include score updates for UI clarity
               }));
             }
           });

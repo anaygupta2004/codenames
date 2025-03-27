@@ -67,14 +67,16 @@ export function GameView({ gameId }: { gameId: number }) {
       // Add the word to revealed cards
       const updatedRevealedCards = [...(game.revealedCards || []), word];
       
-      // Update the game with the new revealed card
+      // CRITICAL FIX: Include the guessingTeam parameter to ensure proper scoring
+      // This ensures the server knows which team is making the guess
       const response = await fetch(`/api/games/${gameId}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          revealedCards: updatedRevealedCards
+          revealedCards: updatedRevealedCards,
+          guessingTeam: userTeam // This allows the server to handle scoring correctly
         })
       });
       
@@ -85,6 +87,18 @@ export function GameView({ gameId }: { gameId: number }) {
       
       const result = await response.json();
       console.log('Guess submitted successfully:', result);
+      
+      // Play a notification sound if the guess impacts scoring
+      if (result.guessResult) {
+        const notificationSound = new Audio('/notification.mp3');
+        notificationSound.volume = 0.3;
+        
+        try {
+          await notificationSound.play();
+        } catch (e) {
+          console.error("Failed to play notification sound:", e);
+        }
+      }
       
     } catch (error) {
       console.error('Error submitting guess:', error);
@@ -115,11 +129,31 @@ export function GameView({ gameId }: { gameId: number }) {
       <h1>Game #{gameId}</h1>
       
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-        <div>
-          <h2 style={{ color: 'red' }}>Red Team: {game.redScore}</h2>
+        <div style={{ 
+          padding: '5px 15px', 
+          borderRadius: '8px', 
+          backgroundColor: '#ffeeee',
+          border: '2px solid #cc0000'
+        }}>
+          <h2 style={{ color: '#cc0000' }}>
+            Red Team: {game.redScore} / {game.redTeam.length} 
+            <span style={{ fontSize: '0.8em', marginLeft: '5px' }}>
+              (Remaining: {game.redTeam.length - (game.redScore || 0)})
+            </span>
+          </h2>
         </div>
-        <div>
-          <h2 style={{ color: 'blue' }}>Blue Team: {game.blueScore}</h2>
+        <div style={{ 
+          padding: '5px 15px', 
+          borderRadius: '8px',
+          backgroundColor: '#eeeeff',
+          border: '2px solid #0066cc'
+        }}>
+          <h2 style={{ color: '#0066cc' }}>
+            Blue Team: {game.blueScore} / {game.blueTeam.length}
+            <span style={{ fontSize: '0.8em', marginLeft: '5px' }}>
+              (Remaining: {game.blueTeam.length - (game.blueScore || 0)})
+            </span>
+          </h2>
         </div>
       </div>
       
