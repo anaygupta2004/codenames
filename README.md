@@ -4,7 +4,7 @@
 
 ## Demo
 
-https://github.com/user-attachments/assets/codenames.mp4
+<video src="https://github.com/user-attachments/assets/codenames.mp4" width="640" height="480" controls></video>
 
 ---
 
