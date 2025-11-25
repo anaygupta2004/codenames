@@ -27,7 +27,7 @@ export type Game = {
 };
 
 export type GameState = "red_turn" | "blue_turn" | "red_win" | "blue_win" | "time_up";
-export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | "llama-7b" | "gemini-1.5-pro";
+export type AIModel = "gpt-4o" | "claude-sonnet-4-5-20250929" | "grok-4-fast-reasoning" | "llama-7b" | "gemini-1.5-pro";
 export type PlayerType = "human" | AIModel;
 
 export type GameHistoryEntry = {

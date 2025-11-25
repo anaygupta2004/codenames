@@ -1542,8 +1542,8 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
     const iconMap: {[key: string]: string} = {
       // AI Models
       'gpt-4o': 'SiOpenai', // OpenAI
-      'claude-3-5-sonnet-20241022': 'SiAnthropic', // Anthropic
-      'grok-2-1212': 'SiXdotai', // Grok (xAI)
+      'claude-sonnet-4-5-20250929': 'SiAnthropic', // Anthropic
+      'grok-4-fast-reasoning': 'SiXdotai', // Grok (xAI)
       'gemini-1.5-pro': 'SiGoogle', // Google
       'llama-7b': 'SiMeta', // Meta
       
@@ -1573,7 +1573,7 @@ export function TeamDiscussion({ messages, gameId, team, onVote, votingInProgres
   };
   
   // Define valid models for icon lookup - MUST match the home page model definitions
-  const VALID_MODELS = ['gpt-4o', 'claude-3-5-sonnet-20241022', 'grok-2-1212', 'gemini-1.5-pro', 'llama-7b', 'human-player'];
+  const VALID_MODELS = ['gpt-4o', 'claude-sonnet-4-5-20250929', 'grok-4-fast-reasoning', 'gemini-1.5-pro', 'llama-7b', 'human-player'];
 
   // Add animation logic for new messages
   const [animatedMessages, setAnimatedMessages] = React.useState<string[]>([]);

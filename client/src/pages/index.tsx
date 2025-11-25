@@ -16,8 +16,8 @@ import { toast } from "@/hooks/use-toast"
 // AI models available in the game - integrate with your existing models
 const AI_MODELS = [
   { id: "gpt-4o", name: "GPT-4o", icon: SiOpenai, type: "advanced" },
-  { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5", icon: SiAnthropic, type: "advanced" },
-  { id: "grok-2-1212", name: "Grok 2", icon: Bot, type: "advanced" },
+  { id: "claude-sonnet-4-5-20250929", name: "Claude 4.5", icon: SiAnthropic, type: "advanced" },
+  { id: "grok-4-fast-reasoning", name: "Grok 4", icon: Bot, type: "advanced" },
   { id: "gemini-1.5-pro", name: "Gemini Pro", icon: SiGooglegemini, type: "advanced" },
   { id: "human-player", name: "Human Player", icon: "👤", type: "human" },
 ]
@@ -41,7 +41,7 @@ export default function HomePage() {
       color: "red",
       members: [
         { id: "red-spymaster", role: "Spymaster", modelId: "gpt-4o" },
-        { id: "red-operative-1", role: "Operative 1", modelId: "claude-3-5-sonnet-20241022" },
+        { id: "red-operative-1", role: "Operative 1", modelId: "claude-sonnet-4-5-20250929" },
         { id: "red-operative-2", role: "Operative 2", modelId: "human-player" },
       ],
     },
@@ -49,8 +49,8 @@ export default function HomePage() {
       name: "Blue Team",
       color: "blue",
       members: [
-        { id: "blue-spymaster", role: "Spymaster", modelId: "claude-3-5-sonnet-20241022" },
-        { id: "blue-operative-1", role: "Operative 1", modelId: "grok-2-1212" },
+        { id: "blue-spymaster", role: "Spymaster", modelId: "claude-sonnet-4-5-20250929" },
+        { id: "blue-operative-1", role: "Operative 1", modelId: "grok-4-fast-reasoning" },
         { id: "blue-operative-2", role: "Operative 2", modelId: "human-player" },
       ],
     },
@@ -125,7 +125,7 @@ export default function HomePage() {
         // AI players setup
         redSpymaster: redTeam.find(m => m.role === "Spymaster")?.modelId || "gpt-4o",
         redPlayers: redTeam.filter(m => m.role.includes("Operative")).map(m => m.modelId),
-        blueSpymaster: blueTeam.find(m => m.role === "Spymaster")?.modelId || "claude-3-5-sonnet-20241022",
+        blueSpymaster: blueTeam.find(m => m.role === "Spymaster")?.modelId || "claude-sonnet-4-5-20250929",
         bluePlayers: blueTeam.filter(m => m.role.includes("Operative")).map(m => m.modelId),
         
         // These fields are required by the server as shown in the error message

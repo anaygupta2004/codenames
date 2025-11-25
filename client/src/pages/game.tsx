@@ -21,8 +21,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 // Update AI model display info with correct icon components
 const AI_MODEL_INFO = {
   "gpt-4o": { name: "GPT-4", Icon: SiOpenai, color: "#74aa9c", logo: "/ai-logos/openai.svg" },
-  "claude-3-5-sonnet-20241022": { name: "Claude", Icon: SiAnthropic, color: "#b980f0", logo: "/ai-logos/anthropic.svg" },
-  "grok-2-1212": { name: "Grok", Icon: SiX, color: "#333333", logo: "/ai-logos/x.svg" },
+  "claude-sonnet-4-5-20250929": { name: "Claude", Icon: SiAnthropic, color: "#b980f0", logo: "/ai-logos/anthropic.svg" },
+  "grok-4-fast-reasoning": { name: "Grok", Icon: SiX, color: "#333333", logo: "/ai-logos/x.svg" },
   "gemini-1.5-pro": { name: "Gemini", Icon: SiGooglegemini, color: "#4285f4", logo: "/ai-logos/gemini.svg" },
   "mistral": { name: "Mistral", Icon: Bot, color: "#7c3aed", logo: "/ai-logos/mistral.svg" },
   "deepseek": { name: "DeepSeek", Icon: Bot, color: "#5e81ac", logo: "/ai-logos/deepseek.svg" }
@@ -3715,7 +3715,7 @@ export default function GamePage() {
                                     >
                                       <ModelIcon 
                                         style={{ 
-                                          color: vote.model === "claude-3-5-sonnet-20241022" || vote.model === "anthropic" ? "#000000" : modelInfo.color 
+                                          color: vote.model === "claude-sonnet-4-5-20250929" || vote.model === "anthropic" ? "#000000" : modelInfo.color 
                                         }} 
                                         size={16} 
                                       />

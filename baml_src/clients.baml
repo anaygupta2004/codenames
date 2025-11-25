@@ -20,7 +20,7 @@ client<llm> CustomGPT4oMini {
 client<llm> Sonnet35 {
   provider anthropic
   options {
-    model "claude-3-5-sonnet-20241022"
+    model "claude-sonnet-4-5-20250929"
     api_key env.ANTHROPIC_API_KEY
   }
 }
@@ -39,9 +39,9 @@ client<llm> GeminiPro {
 client<llm> Grok {
   provider "openai-generic"
   options {
-    base_url "https://api.x.ai/v1/chat/completions"
+    base_url "https://api.x.ai/v1"
     api_key env.XAI_API_KEY
-    model grok-2-1212
+    model "grok-4-fast-reasoning"
   }
 }
 

@@ -27,15 +27,15 @@ const getModelIcon = (model: string) => {
       baseModel = model.split("#")[0]
     } else if (model.includes("-")) {
       const parts = model.split("-")
-      if (["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-1.5-pro", "llama-7b"].includes(parts[0])) {
+      if (["gpt-4o", "claude-sonnet-4-5-20250929", "grok-4-fast-reasoning", "gemini-1.5-pro", "llama-7b"].includes(parts[0])) {
         baseModel = parts[0]
       }
     }
   }
 
   if (baseModel === "gpt-4o") return <SiOpenai />
-  if (baseModel === "claude-3-5-sonnet-20241022") return <SiAnthropic />
-  if (baseModel === "grok-2-1212") return <SiX />
+  if (baseModel === "claude-sonnet-4-5-20250929") return <SiAnthropic />
+  if (baseModel === "grok-4-fast-reasoning") return <SiX />
   if (baseModel === "gemini-1.5-pro") return <SiGooglecloud />
 
   if (baseModel === "human") return "👤"

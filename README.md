@@ -2,6 +2,10 @@
 
 > A web-based implementation of the popular word-guessing board game Codenames, enhanced with multiple AI models that can act as teammates. Play with or against various AI models in this cooperative word association game.
 
+## Demo
+
+https://github.com/user-attachments/assets/codenames.mp4
+
 ---
 
 ## Table of Contents

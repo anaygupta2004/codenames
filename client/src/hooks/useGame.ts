@@ -528,7 +528,7 @@ const connect = useCallback(() => {
                   if (baseModelPlayer.includes('#')) {
                     baseModelPlayer = baseModelPlayer.split('#')[0];
                   } else if (baseModelPlayer.includes('-')) {
-                    const possibleModels = ['gpt-4o', 'claude-3-5-sonnet-20241022', 'grok-2-1212', 'gemini-1.5-pro', 'llama-7b'];
+                    const possibleModels = ['gpt-4o', 'claude-sonnet-4-5-20250929', 'grok-4-fast-reasoning', 'gemini-1.5-pro', 'llama-7b'];
                     for (const model of possibleModels) {
                       if (baseModelPlayer.startsWith(model)) {
                         baseModelPlayer = model;

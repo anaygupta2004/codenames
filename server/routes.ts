@@ -25,7 +25,7 @@ import type { AIModel } from "./lib/ai-service";
 
 
 
-const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-1.5-pro"] as const;
+const VALID_MODELS = ["gpt-4o", "claude-sonnet-4-5-20250929", "grok-4-fast-reasoning", "gemini-1.5-pro"] as const;
 
 
 // Track active game discussions
@@ -655,8 +655,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const iconMap: {[key: string]: string} = {
       // AI Models
       'gpt-4o': '🟢', // OpenAI - Green
-      'claude-3-5-sonnet-20241022': '🟣', // Anthropic - Purple
-      'grok-2-1212': '🔴', // Grok - Red
+      'claude-sonnet-4-5-20250929': '🟣', // Anthropic - Purple
+      'grok-4-fast-reasoning': '🔴', // Grok - Red
       'gemini-1.5-pro': '🔵', // Google - Blue
       'llama-7b': '🟡', // Meta - Yellow
       
@@ -1590,7 +1590,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   baseModel = baseModel.split('#')[0];
                 } else if (baseModel.includes('-')) {
                   const parts = baseModel.split('-');
-                  const validModels = ['gpt-4o', 'claude-3-5-sonnet-20241022', 'grok-2-1212', 'gemini-1.5-pro', 'llama-7b'];
+                  const validModels = ['gpt-4o', 'claude-sonnet-4-5-20250929', 'grok-4-fast-reasoning', 'gemini-1.5-pro', 'llama-7b'];
                   if (validModels.includes(parts[0])) {
                     baseModel = parts[0];
                   }
@@ -1614,8 +1614,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
               const iconMap: {[key: string]: string} = {
                 // AI Models
                 'gpt-4o': '🟢', // OpenAI - Green
-                'claude-3-5-sonnet-20241022': '🟣', // Anthropic - Purple
-                'grok-2-1212': '🔴', // Grok - Red
+                'claude-sonnet-4-5-20250929': '🟣', // Anthropic - Purple
+                'grok-4-fast-reasoning': '🔴', // Grok - Red
                 'gemini-1.5-pro': '🔵', // Google - Blue
                 'llama-7b': '🟡', // Meta - Yellow
                 

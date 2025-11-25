@@ -19,10 +19,10 @@ let anthropic = new Anthropic({
 
 let genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || 'dummy-key-for-dev');
 
-export type AIModel = "gpt-4o" | "claude-3-5-sonnet-20241022" | "grok-2-1212" | "gemini-1.5-pro";
+export type AIModel = "gpt-4o" | "claude-sonnet-4-5-20250929" | "grok-4-fast-reasoning" | "gemini-1.5-pro";
 export type AIService = "openai" | "anthropic" | "xai" | "google";
 
-const VALID_MODELS = ["gpt-4o", "claude-3-5-sonnet-20241022", "grok-2-1212", "gemini-1.5-pro"];
+const VALID_MODELS = ["gpt-4o", "claude-sonnet-4-5-20250929", "grok-4-fast-reasoning", "gemini-1.5-pro"];
 
 function validateModel(model: string): AIModel {
   if (!VALID_MODELS.includes(model)) {
@@ -33,8 +33,8 @@ function validateModel(model: string): AIModel {
 
 function getAIService(model: AIModel): AIService {
   if (model === "gpt-4o") return "openai";
-  if (model === "claude-3-5-sonnet-20241022") return "anthropic";
-  if (model === "grok-2-1212") return "xai";
+  if (model === "claude-sonnet-4-5-20250929") return "anthropic";
+  if (model === "grok-4-fast-reasoning") return "xai";
   if (model === "gemini-1.5-pro") return "google";
   throw new Error(`Invalid AI model: ${model}`);
 }
@@ -705,7 +705,7 @@ async function getAnthropicGuessWithAction(prompt: string): Promise<{
   confidence: number;
 }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -747,11 +747,11 @@ async function getXAIGuessWithAction(prompt: string): Promise<{
 }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -1291,10 +1291,10 @@ Include JSON with your analysis: {
       case "gpt-4o":
         response = await getOpenAIEnhancedDiscussion(prompt);
         break;
-      case "claude-3-5-sonnet-20241022":
+      case "claude-sonnet-4-5-20250929":
         response = await getAnthropicEnhancedDiscussion(prompt);
         break;
-      case "grok-2-1212":
+      case "grok-4-fast-reasoning":
         response = await getXAIEnhancedDiscussion(prompt);
         break;
       case "gemini-1.5-pro":
@@ -1740,7 +1740,7 @@ async function getAnthropicEnhancedDiscussion(prompt: string): Promise<{
   reasoning?: string;
 }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -1791,11 +1791,11 @@ async function getXAIEnhancedDiscussion(prompt: string): Promise<{
 }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -1968,7 +1968,7 @@ async function getAnthropicDiscussionWithAction(prompt: string): Promise<{
   reasoning?: string;
 }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -2011,11 +2011,11 @@ async function getAnthropicDiscussionWithAction(prompt: string): Promise<{
 async function getXAIDiscussionWithAction(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string; risk?: RiskLevel; action?: "discuss" | "guess" | "end_turn"; reasoning?: string }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -2495,9 +2495,9 @@ Respond in JSON format with:
   switch (model) {
     case "gpt-4o":
       return await getOpenAIMetaDecision(prompt);
-    case "claude-3-5-sonnet-20241022":
+    case "claude-sonnet-4-5-20250929":
       return await getAnthropicMetaDecision(prompt);
-    case "grok-2-1212":
+    case "grok-4-fast-reasoning":
       return await getXAIMetaDecision(prompt);
     case "gemini-1.5-pro":
       return await getGeminiMetaDecision(prompt);
@@ -2532,7 +2532,7 @@ async function getAnthropicMetaDecision(prompt: string): Promise<{
   confidence: number;
 }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -2579,11 +2579,11 @@ async function getXAIMetaDecision(prompt: string): Promise<{
 }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -2826,9 +2826,9 @@ Respond in JSON format with:
   switch (model) {
     case "gpt-4o":
       return await getOpenAIDecision(prompt);
-    case "claude-3-5-sonnet-20241022":
+    case "claude-sonnet-4-5-20250929":
       return await getAnthropicDecision(prompt);
-    case "grok-2-1212":
+    case "grok-4-fast-reasoning":
       return await getXAIDecision(prompt);
     case "gemini-1.5-pro":
       return await getGeminiDecision(prompt);
@@ -2863,7 +2863,7 @@ async function getAnthropicDecision(prompt: string): Promise<{
   confidence: number;
 }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -2910,11 +2910,11 @@ async function getXAIDecision(prompt: string): Promise<{
 }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -3008,7 +3008,7 @@ async function getOpenAIClue(prompt: string): Promise<{ word: string; number: nu
 
 async function getAnthropicClue(prompt: string): Promise<{ word: string; number: number; reasoning?: string }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -3057,11 +3057,11 @@ async function getAnthropicClue(prompt: string): Promise<{ word: string; number:
 async function getXAIClue(prompt: string): Promise<{ word: string; number: number; reasoning?: string }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1/chat/completions",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -3096,7 +3096,7 @@ async function getOpenAIGuess(prompt: string): Promise<{ guess: string }> {
 
 async function getAnthropicGuess(prompt: string): Promise<{ guess: string }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -3137,11 +3137,11 @@ async function getAnthropicGuess(prompt: string): Promise<{ guess: string }> {
 async function getXAIGuess(prompt: string): Promise<{ guess: string }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -3171,7 +3171,7 @@ async function getOpenAIDiscussion(prompt: string): Promise<{ message: string; c
 
 async function getAnthropicDiscussion(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -3221,11 +3221,11 @@ async function getAnthropicDiscussion(prompt: string): Promise<{ message: string
 async function getXAIDiscussion(prompt: string): Promise<{ message: string; confidence: number; suggestedWord?: string }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -3260,7 +3260,7 @@ async function getOpenAIVote(prompt: string): Promise<{ approved: boolean; reaso
 
 async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; reason: string; confidence: number }> {
   const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 1024,
     messages: [
       { 
@@ -3318,11 +3318,11 @@ async function getAnthropicVote(prompt: string): Promise<{ approved: boolean; re
 async function getXAIVote(prompt: string): Promise<{ approved: boolean; reason: string; confidence: number }> {
   const openaiXAI = new OpenAI({
     baseURL: "https://api.x.ai/v1",
-    apiKey: "***REMOVED***"
+    apiKey: process.env.XAI_API_KEY
   });
 
   const response = await openaiXAI.chat.completions.create({
-    model: "grok-2-1212",
+    model: "grok-4-fast-reasoning",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" }
   });
@@ -3347,9 +3347,9 @@ function getModelDisplayName(model: AIModel): string {
   switch (model) {
     case "gpt-4o":
       return "GPT-4";
-    case "claude-3-5-sonnet-20241022":
+    case "claude-sonnet-4-5-20250929":
       return "Claude";
-    case "grok-2-1212":
+    case "grok-4-fast-reasoning":
       return "Grok";
     case "gemini-1.5-pro":
       return "Gemini";
@@ -3826,7 +3826,7 @@ export async function backgroundSpymasterThinking(
       );
       
       // Score the clue using our sophisticated scoring system
-      const { score, details } = evaluateClueQuality(clue, teamWords, opposingWords, assassinWord, gameHistory);
+      const { score, details } = evaluateClueQuality(clue, teamWords, opposingWords, assassinWord, gameHistory, words);
       
       // Update the cache with the new clue and its score
       spymasterThinkingCache.set(cacheKey, {
@@ -3877,7 +3877,8 @@ function evaluateClueQuality(
   teamWords: string[],
   opposingWords: string[],
   assassinWord: string,
-  gameHistory: GameHistoryEntry[] | null | undefined
+  gameHistory: GameHistoryEntry[] | null | undefined,
+  allGameWords: string[]
 ): { score: number; details: { teamWordScore: number; assassinPenalty: number; opponentPenalty: number; neutralPenalty: number; uniquenessBonus: number; dangerousWords: string[] } } {
   // Calculate the base team word score - this is our positive reward component
   // We want to reward clues that connect more team words
@@ -3945,7 +3946,7 @@ function evaluateClueQuality(
   
   // Light penalty for neutral words - suboptimal but not as bad as opponent words
   const allWords = [assassinWord, ...teamWords, ...opposingWords];
-  const remainingWords = words.filter(w => !allWords.includes(w)); // These are neutral words
+  const remainingWords = allGameWords.filter(w => !allWords.includes(w)); // These are neutral words
   
   let neutralPenalty = 0;
   const neutralSimilarities = remainingWords.map(word => ({
