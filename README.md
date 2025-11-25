@@ -4,7 +4,11 @@
 
 ## Demo
 
-<video src="https://github.com/user-attachments/assets/codenames.mp4" width="640" height="480" controls></video>
+<video src="https://github.com/user-attachments/assets/codenames.mp4"
+
+https://github.com/user-attachments/assets/769ccc9c-82b8-4080-9fec-e602d067189d
+
+ width="640" height="480" controls></video>
 
 ---
 
