@@ -6,8 +6,6 @@
 
 https://github.com/user-attachments/assets/769ccc9c-82b8-4080-9fec-e602d067189d
 
- width="640" height="480" controls></video>
-
 ---
 
 ## Table of Contents
